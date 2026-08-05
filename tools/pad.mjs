@@ -199,10 +199,19 @@ const S_DRIVE = () => {
  * first four rows below pin that.
  *
  * The defect this section used to work around — `Game.step` opening the menu
- * and then closing it inside the same frame off the still-true flag — is fixed
- * (main.js clears the spent edge) and is gated by tools/pausekey.mjs, which
- * counts `pause.active` per frame under REAL key and pad presses. That is the
- * measurement this section deliberately does not duplicate.
+ * and then closing it inside the same frame off the still-true flag — is fixed,
+ * and is gated by tools/pausekey.mjs, which counts `pause.active` per frame
+ * under REAL key and pad presses. That is the measurement this section
+ * deliberately does not duplicate.
+ *
+ * HOW it is fixed matters to this file. main.js does NOT clear the spent edge:
+ * it passes `opening: true` into `stepPause` on the frame the press arrived and
+ * suppresses the resume there, at the consumer (src/main.js:1353-1363).
+ * Clearing `input.pausePressed` would have been the shorter fix and it would
+ * have silently emptied the four rows below, which read that flag straight off
+ * `Game.step` — a consumed flag turns this section's edge count into a vacuous
+ * 0 == 0. The input layer's contract is that an edge flag says what the DEVICE
+ * did this frame, and that contract is what makes this section a measurement.
  */
 const S_SHELL = ([b]) => {
   const k = window.__padkit, g = window.__game;
@@ -226,8 +235,17 @@ const S_SHELL = ([b]) => {
   k.row('a second press is one more — the edge re-arms', again === 1, again, 1);
   k.btn(b.start, 0); k.step(2);
 
-  /* The keyboard's Escape, through the same counter, so the two mechanisms
-     can be compared rather than each judged against a number in this file. */
+  /* The keyboard's Escape, through the same counter and against the same
+     NUMBER.
+     It used to be asserted as `kbHeld === held` — the two devices compared to
+     each other — and that is the check that cannot fail. Both mechanisms were
+     broken at once (neither could open the pause menu at all until the
+     `opening` flag landed in main.js), both produced zero edges, and the row
+     passed at 0 == 0 while reporting agreement. Two measurements agreeing is
+     not evidence either is right; the expected count is 1, and 1 is what this
+     asserts. The pad's own count is still printed, because a disagreement
+     between the devices is worth seeing when it happens — it is just not what
+     decides the row. */
   k.uninstall();
   k.key('Escape', true);
   const kbHeld = edges(60);
@@ -235,7 +253,7 @@ const S_SHELL = ([b]) => {
   k.step(2);
   k.install();
   k.row('and the keyboard agrees: Escape held is one edge too',
-    kbHeld === held, `${kbHeld} edge(s) in 60 frames vs the pad's ${held}`, held);
+    kbHeld === 1, `${kbHeld} edge(s) in 60 frames (the pad's was ${held})`, 1);
 
   /* Now the menu itself, opened through Game.openPause rather than through the
      Start edge, so these rows measure NAVIGATION and not opening — opening by

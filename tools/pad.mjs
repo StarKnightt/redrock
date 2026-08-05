@@ -31,24 +31,13 @@
  * READING THE EXIT CODE: `node tools/pad.mjs | tee log.txt` reports tee's
  * status. Redirect — `node tools/pad.mjs > log.txt 2>&1 ; echo $?`.
  *
- * The fake is honest. 17 buttons each `{pressed, touched, value}`, four axes,
- * `mapping: 'standard'`, `connected: true`, `index: 0`, and a timestamp that
- * advances on every mutation AND on every frame, because a real pad's does and
- * because a consumer is entitled to ignore one whose does not.
- *
- * The button indices below are written out rather than imported from
- * src/core/input.js, deliberately: a gate that reads its expectations out of
- * the file under test cannot notice that file changing.
+ * The fake pad itself and the button table now live in tools/padkit.mjs,
+ * unchanged, because tools/pausekey.mjs needs the same pad and two fakes would
+ * drift apart. Everything below is this file's own.
  */
 import { run } from './harness.mjs';
 import { finish } from './tame.mjs';
-
-const B = {
-  south: 0, east: 1, west: 2, north: 3,
-  l1: 4, r1: 5, l2: 6, r2: 7,
-  select: 8, start: 9,
-  dpadUp: 12, dpadDown: 13,
-};
+import { B, KIT } from './padkit.mjs';
 
 /* The steering table, computed by hand from the two constants in input.js —
    a 0.14 deadzone rescaled over the remaining 0.86, then squared, sign kept:
@@ -69,86 +58,6 @@ const STEER_TABLE = [
   [0.75, 0.5031097891],
   [1.00, 1.0000000000],
 ];
-
-/* ---- in-page kit ------------------------------------------------------- */
-
-const KIT = () => {
-  const g = window.__game;
-  /* The rAF loop must not step behind a probe. Every section re-asserts this
-     because a section that forgets it measures frames it did not ask for. */
-  g.setPaused(true);
-
-  const pad = {
-    index: 0,
-    id: 'redrock synthetic pad (standard mapping)',
-    mapping: 'standard',
-    connected: true,
-    timestamp: 0,
-    axes: [0, 0, 0, 0],
-    buttons: Array.from({ length: 17 },
-      () => ({ pressed: false, touched: false, value: 0 })),
-  };
-  const real = navigator.getGamepads ? navigator.getGamepads.bind(navigator) : null;
-
-  const k = {
-    pad,
-    rows: [],
-    install() { navigator.getGamepads = () => [pad, null, null, null]; },
-    uninstall() { navigator.getGamepads = real || (() => []); },
-    /* Every poll of a live pad returns a fresher timestamp, whether or not
-       anything on it moved. */
-    stamp() { pad.timestamp += 1000 / 60; },
-    axis(i, v) { pad.axes[i] = v; k.stamp(); },
-    /* A digital button, as a well-behaved pad reports one. */
-    btn(i, v) {
-      const b = pad.buttons[i];
-      b.value = v; b.pressed = v > 0.1; b.touched = b.pressed;
-      k.stamp();
-    },
-    /* A badly-behaved one, field by field. */
-    raw(i, o) { Object.assign(pad.buttons[i], o); k.stamp(); },
-    clear() {
-      pad.axes.fill(0);
-      for (const b of pad.buttons) { b.pressed = false; b.touched = false; b.value = 0; }
-      pad.connected = true;
-      pad.mapping = 'standard';
-      k.stamp();
-    },
-    step(n = 1) { for (let j = 0; j < n; j++) { k.stamp(); g.step(1 / 60); } },
-    read() {
-      const i = g.input;
-      return {
-        steer: i.steer, throttle: i.throttle, brake: i.brake, handbrake: i.handbrake,
-        lookBack: i.lookBack, reset: i.resetPressed, skip: i.skipPressed,
-        pause: i.pausePressed, confirm: i.confirmPressed,
-        up: i.menuUpPressed, down: i.menuDownPressed,
-      };
-    },
-    frame() { k.step(1); return k.read(); },
-    /* On `window`, which is exactly the target Input attaches to. */
-    key(code, down) {
-      window.dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup',
-        { code, bubbles: true, cancelable: true }));
-    },
-    /* Back to a car that can move: restart() arms the countdown
-       unconditionally (main.js:1523), so a probe that wants the car to drive
-       has to put the lights out itself. */
-    grid() {
-      g.autopilot(false);
-      g.botInput = null;
-      g.restart();
-      g.countdown.skip();
-      g.ending.skip();
-      g.pause.close();
-      k.clear();
-    },
-    row(name, ok, got, want) { k.rows.push({ name, ok: !!ok, got: String(got), want: String(want) }); },
-    near(a, b, tol) { return Math.abs(a - b) <= tol; },
-    take() { const r = k.rows; k.rows = []; return { rows: r }; },
-  };
-  window.__padkit = k;
-  return true;
-};
 
 /* ---- sections ---------------------------------------------------------- */
 
@@ -284,17 +193,16 @@ const S_DRIVE = () => {
 /* Start, held. The whole reason `_padWas` exists.
  *
  * COUNTED AT THE INPUT LAYER, on `pausePressed`, and not on `pause.active`,
- * and that is a deliberate retreat from what this section measured first.
- * Counting menu toggles finds zero of them — but so does the KEYBOARD, because
- * `Game.step` opens the menu and then calls `stepPause(0)` on the same frame,
- * where the still-true `pausePressed` is read as RESUME and closes it again.
- * That defect is in main.js, predates this round, is identical on both input
- * devices, and is written up in .fix/FINDINGS-pad.md; it is not a pad gap and
- * fixing it would change what a keyboard player experiences, which this round
- * may not do. What IS this file's business is that the pad produces exactly
- * ONE edge per press however long the button is held, and that is what the
- * first three rows below pin — against the keyboard, whose edge is generated
- * by a completely different mechanism and must agree.
+ * because what this file owns is the DEVICE: the pad must produce exactly ONE
+ * edge per press however long the button is held, and it must agree with the
+ * keyboard, whose edge is generated by a completely different mechanism. The
+ * first four rows below pin that.
+ *
+ * The defect this section used to work around — `Game.step` opening the menu
+ * and then closing it inside the same frame off the still-true flag — is fixed
+ * (main.js clears the spent edge) and is gated by tools/pausekey.mjs, which
+ * counts `pause.active` per frame under REAL key and pad presses. That is the
+ * measurement this section deliberately does not duplicate.
  */
 const S_SHELL = ([b]) => {
   const k = window.__padkit, g = window.__game;
@@ -329,9 +237,10 @@ const S_SHELL = ([b]) => {
   k.row('and the keyboard agrees: Escape held is one edge too',
     kbHeld === held, `${kbHeld} edge(s) in 60 frames vs the pad's ${held}`, held);
 
-  /* Now the menu itself, opened the way tools/shell.mjs opens it — through
-     Game.openPause, which is what the edge above would call if main.js let it.
-     Everything past this point IS driven through Game.step by the pad. */
+  /* Now the menu itself, opened through Game.openPause rather than through the
+     Start edge, so these rows measure NAVIGATION and not opening — opening by
+     a real edge is tools/pausekey.mjs's job and is gated there. Everything
+     past this point IS driven through Game.step by the pad. */
   k.clear();
   g.openPause();
   k.step(1);

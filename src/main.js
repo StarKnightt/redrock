@@ -966,8 +966,13 @@ class Game {
       this.openPause();
       /* Stepped at zero on the opening frame so the HUD has the menu's
          payload immediately; without it the first drawn frame of a pause is
-         the racing HUD with no plate on it. */
-      return this.stepPause(0);
+         the racing HUD with no plate on it.
+         `true` is THE OPENING FRAME, and without it the menu could not be
+         opened at all on any device: stepPause reads this same still-true
+         edge as Escape-to-resume, takes RESUME on the line after, and closes
+         the menu inside the frame that opened it. Zero visible frames, every
+         press, every platform. Gated by tools/pausekey.mjs. */
+      return this.stepPause(0, true);
     }
 
     this.time += dt;
@@ -1335,7 +1340,7 @@ class Game {
    * piece of state in the HUD that remembers anything, and a paused needle
    * that kept springing would be a moving instrument on a frozen frame.
    */
-  stepPause(dt) {
+  stepPause(dt, opening = false) {
     this.pause.update(dt);
     const i = this.input;
     if (i.menuUpPressed) this.pause.move(-1);
@@ -1344,8 +1349,18 @@ class Game {
        shortcuts are here because they are the two a player already knows from
        everywhere else in this game — R has been the restart key since the
        results card landed — and because a menu that can only be operated one
-       way is a menu you have to look at. */
-    if (i.pausePressed) this.pause.choose('RESUME');
+       way is a menu you have to look at.
+       `opening` is the frame the press ARRIVED on, where this same edge is
+       what put the menu up a few lines ago in `step` and must not also take
+       it down. Suppressed HERE, by the consumer, rather than by clearing
+       `input.pausePressed` at the call site: that reads as the tidier
+       one-liner and it silently breaks the input layer's contract, which is
+       that an edge flag is what the DEVICE did this frame. tools/pad.mjs
+       reads exactly that flag after Game.step to prove the pad emits one edge
+       per press however long Start is held, and a consumed flag turned its
+       measurement into a vacuous 0 == 0. Measured, both halves, in
+       .fix/FINDINGS-pause.md. */
+    if (i.pausePressed && !opening) this.pause.choose('RESUME');
     else if (i.resetPressed) this.pause.choose('RESTART');
     else if (i.confirmPressed) this.pause.confirm();
 

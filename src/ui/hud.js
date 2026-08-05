@@ -658,11 +658,25 @@ export class Hud {
     /* The way out. Below the plate, on the delta chip's furniture, because it
        is the same kind of object — a small statement pinned to a bigger one —
        and because a player who has just been reading a table finds the next
-       instruction directly under it. */
+       instruction directly under it.
+       BOTH inputs are named because both work: restart is R on the keyboard
+       and select on a pad (src/core/input.js `reset`), and a controller player
+       told to reach for a keyboard had no way off this card at all until the
+       pad binding landed. Static rather than switched on whether a pad is
+       plugged in — see _buildTitle, which carries the measurement.
+       The verb went, and that was forced rather than chosen. This slab is
+       sized to its own text and hangs under a 560u plate, and "PRESS R OR
+       SELECT TO RACE AGAIN" measures 592.5u — 105.8% of the plate, so the
+       small statement would be wider than the big one it is pinned to.
+       Dropping PRESS brings it to 481.4u, 86.0%, against 73.1% today; the
+       title's prompt lost the same word for the same reason, so the two
+       screens that bracket a run still speak in one voice. .fix/pk/slabfit.mjs
+       has the table, and every quantity in it is proportional to u on both
+       sides, so that ratio is the same at all five parity sizes. */
     if (e.prompt > 0.01) {
       ctx.save();
       ctx.globalAlpha = clamp(e.alpha * e.prompt, 0, 1);
-      const txt = 'PRESS R TO RACE AGAIN';
+      const txt = 'R OR SELECT TO RACE AGAIN';
       const ps = 19 * u;
       const pw = textWidth(txt, ps, 0.7) + 26 * u, ph = ps + 14 * u;
       const px = cx - pw / 2, py = cy + ch / 2 + 16 * u;
@@ -1660,12 +1674,29 @@ export class Hud {
       drawText(g, 'SEED ' + seed, cw / 2, labY + (lab - lab * 0.82) / 2, lab * 0.82,
         { align: 'center', color: INK_SOFT, weight: 1.25, tracking: 1.1 });
 
-      /* And the way in, on the results card's own PRESS R furniture: an ink
-         chamfer with cream tracked caps. Same object, same job — a small
-         instruction pinned under a bigger statement — so the two screens that
-         bracket a run are telling the player what to press in one voice. */
+      /* And the way in, on the results card's own furniture: an ink chamfer
+         with cream tracked caps. Same object, same job — a small instruction
+         pinned under a bigger statement — so the two screens that bracket a
+         run are telling the player what to press in one voice.
+         Both inputs, for the reason the card gives: the title is confirmed
+         with Enter on the keyboard and south on a pad, and naming only the
+         keyboard told a controller player to go and find one.
+         STATIC, and not switched on whether a pad is connected, which is the
+         nicer-sounding option. It was rejected on a measurement rather than
+         on taste: the only thing hardware-dependent text buys is width, and
+         width is not short here — this slab is 410.4u inside a 661.9u band
+         (62.0%, against 66.4% for the shorter string it replaces) and the
+         card's is 481.4u inside 560u (86.0%). Both ratios are constant across
+         every size and dpr because slab, padding and type are all
+         proportional to u. So the whole benefit is empty, and the cost is
+         real: it would make what the HUD draws depend on what is plugged into
+         the machine, which is the one thing a byte-parity gate cannot
+         tolerate, and would oblige this element to go inert under
+         Game.autopilot(true) the way the countdown, the ending and the
+         overtake accents do. Paying that for nothing is the wrong trade.
+         .fix/pk/slabfit.mjs has the table. */
       const py = cy0 + chipH + promptGap;
-      const txt = 'PRESS ENTER TO START';
+      const txt = 'ENTER OR A TO START';
       const pw = textWidth(txt, promptSize, 0.7) + 30 * u;
       const px = (cw - pw) / 2;
       g.fillStyle = SHADOW;

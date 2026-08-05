@@ -2,6 +2,8 @@
 
 A cel-shaded downhill racing game built in Three.js, with every asset generated procedurally at runtime.
 
+**[Play it in the browser](https://starknightt.github.io/redrock/)** — no install, keyboard required.
+
 There are no models, textures, audio files or fonts in this repository. The road, the terrain, the sea, the vegetation, the cars, the crowd, the user interface and the entire sound design are produced in code at load time. The only runtime dependency is Three.js.
 
 ## Overview
@@ -12,7 +14,7 @@ The visual target is a comic-book look: thick black ink outlines, flat colour qu
 
 ## Running it
 
-Requires Node.js 18 or newer.
+The hosted build at [starknightt.github.io/redrock](https://starknightt.github.io/redrock/) is deployed from `main` by `.github/workflows/pages.yml`, which vendors Three.js into a `dist/` and rewrites the import map to a relative specifier. To run it locally instead, Node.js 18 or newer is required.
 
 ```bash
 npm install

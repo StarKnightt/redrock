@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Static site assembled by tools/pages.mjs for GitHub Pages
+dist/
+
 # Capture and measurement output.
 # These directories hold screenshots, video frames and probe results produced by
 # the tools in tools/. They are reproducible from source and total several

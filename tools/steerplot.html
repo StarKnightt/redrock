@@ -1,0 +1,163 @@
+<!doctype html>
+<!-- Draws the two steering traces steerprobe.mjs writes out. Loaded and
+     screenshotted by tools/steerplot.mjs; there is nothing to see by hand. -->
+<meta charset="utf-8">
+<title>steering trace</title>
+<style>
+  html, body { margin: 0; background: #14171c; }
+  canvas { display: block; }
+</style>
+<canvas id="c" width="1500" height="1180"></canvas>
+<script>
+const TAG = new URLSearchParams(location.search).get('tag') || 'steer';
+const COL = { before: '#e8654a', after: '#54c8d8', grid: '#262b33',
+              text: '#9aa4b2', bright: '#e6ecf3', key: '#1c2129' };
+
+async function load(file) {
+  const r = await fetch(`/shots/${TAG}/${file}.csv`);
+  const lines = (await r.text()).trim().split('\n').slice(1);
+  return lines.map(l => l.split(',').map(Number));
+}
+
+function panel(g, x, y, w, h, title, sub) {
+  g.fillStyle = COL.grid;
+  g.fillRect(x, y + h, w, 1);
+  g.fillRect(x, y, 1, h);
+  g.fillStyle = COL.bright;
+  g.font = '600 19px system-ui, sans-serif';
+  g.fillText(title, x, y - 20);
+  g.fillStyle = COL.text;
+  g.font = '14px system-ui, sans-serif';
+  g.fillText(sub, x, y - 3);
+}
+
+function line(g, pts, colour, width) {
+  g.strokeStyle = colour;
+  g.lineWidth = width;
+  g.lineJoin = 'round';
+  g.beginPath();
+  pts.forEach(([px, py], i) => (i ? g.lineTo(px, py) : g.moveTo(px, py)));
+  g.stroke();
+}
+
+(async () => {
+  const data = { before: await load('step60-before'), after: await load('step60-after') };
+  const subs = { before: await load('substep-before'), after: await load('substep-after') };
+  const g = document.getElementById('c').getContext('2d');
+  g.fillStyle = '#14171c';
+  g.fillRect(0, 0, 1500, 1180);
+
+  const T0 = 0.30, T1 = 1.85;
+  const L = 90, W = 1340;
+  const X = t => L + ((t - T0) / (T1 - T0)) * W;
+
+  // The window where the key is actually down, as a background block.
+  const rows = data.after;
+  const down = rows.filter(r => r[1] === 1).map(r => r[0]);
+  const keyFrom = Math.min(...down), keyTo = Math.max(...down);
+
+  const rate = rs => {
+    const out = [];
+    for (let i = 1; i < rs.length; i++) {
+      out.push([rs[i][0], (rs[i][3] - rs[i - 1][3]) / (rs[i][0] - rs[i - 1][0])]);
+    }
+    return out;
+  };
+
+  /* The turn-in, at the substep, normalised so the two builds can be compared
+     on shape alone. They reach different rates because one is quicker, and
+     that is not what this panel is about: it is about whether the climb is a
+     curve or a flight of stairs. */
+  const subRate = (rs) => {
+    const out = [];
+    for (let i = 1; i < rs.length; i++) {
+      out.push([rs[i][0], (rs[i][1] - rs[i - 1][1]) / (rs[i][0] - rs[i - 1][0])]);
+    }
+    const peak = Math.max(...out.map(d => Math.abs(d[1])));
+    return out.map(([t, v]) => [t, v / peak]);
+  };
+
+  const panels = [
+    {
+      y: 90, h: 280, t0: T0, t1: T1,
+      title: 'Road-wheel angle through one key press',
+      sub: 'the angle the front wheels are actually turned to — 60 fps',
+      series: n => data[n].map(r => [r[0], r[3]]), lo: -1, hi: 20, unit: '°',
+      ticks: 0.2,
+    },
+    {
+      y: 500, h: 280, t0: T0, t1: T1,
+      title: 'Rate of change of that angle',
+      sub: 'how fast the wheels are turning — 60 fps, degrees per second',
+      series: n => rate(data[n]), lo: -200, hi: 200, unit: '°/s',
+      ticks: 0.2,
+    },
+    {
+      y: 910, h: 230, t0: 0.36, t1: 0.60,
+      title: 'The same turn-in sampled at the 120 Hz physics substep, each normalised to its own peak',
+      sub: 'before steps once per rendered frame and holds — the staircase is the jerk. after is a curve at any sampling rate.',
+      series: n => subRate(subs[n]), lo: 0, hi: 1.05, unit: '',
+      ticks: 0.04, decimals: 2,
+    },
+  ];
+
+  for (const p of panels) {
+    const PX = t => L + ((t - p.t0) / (p.t1 - p.t0)) * W;
+    const Y = v => p.y + p.h - ((v - p.lo) / (p.hi - p.lo)) * p.h;
+
+    if (keyTo > p.t0 && keyFrom < p.t1) {
+      g.fillStyle = COL.key;
+      const a = Math.max(PX(Math.max(keyFrom, p.t0)), L);
+      const b = Math.min(PX(Math.min(keyTo, p.t1)), L + W);
+      g.fillRect(a, p.y, b - a, p.h);
+    }
+
+    panel(g, L, p.y, W, p.h, p.title, p.sub);
+
+    g.strokeStyle = COL.grid;
+    g.lineWidth = 1;
+    for (let k = 0; k <= 4; k++) {
+      const v = p.lo + ((p.hi - p.lo) * k) / 4;
+      g.beginPath(); g.moveTo(L, Y(v)); g.lineTo(L + W, Y(v)); g.stroke();
+      g.fillStyle = COL.text;
+      g.font = '13px system-ui, sans-serif';
+      g.textAlign = 'right';
+      g.fillText(v.toFixed(p.decimals || 0) + p.unit, L - 10, Y(v) + 4);
+      g.textAlign = 'left';
+    }
+    for (let t = Math.ceil(p.t0 / p.ticks) * p.ticks; t <= p.t1 + 1e-9; t += p.ticks) {
+      g.strokeStyle = COL.grid;
+      g.beginPath(); g.moveTo(PX(t), p.y); g.lineTo(PX(t), p.y + p.h); g.stroke();
+      g.fillStyle = COL.text;
+      g.textAlign = 'center';
+      g.fillText(t.toFixed(p.ticks < 0.1 ? 2 : 1) + ' s', PX(t), p.y + p.h + 20);
+      g.textAlign = 'left';
+    }
+
+    for (const name of ['before', 'after']) {
+      line(g, p.series(name).filter(d => d[0] >= p.t0 && d[0] <= p.t1)
+        .map(([t, v]) => [PX(t), Y(Math.max(p.lo, Math.min(p.hi, v)))]),
+        COL[name], name === 'after' ? 3 : 2.4);
+    }
+  }
+
+  // Labels for the key window and the two lines.
+  g.fillStyle = COL.text;
+  g.font = '14px system-ui, sans-serif';
+  g.textAlign = 'center';
+  g.fillText('steer key held down', (X(keyFrom) + X(keyTo)) / 2, 78);
+  g.textAlign = 'left';
+  g.fillText('released', X(keyTo) + 10, 78);
+
+  g.font = '600 16px system-ui, sans-serif';
+  g.fillStyle = COL.before;
+  g.fillText('before  —  rate limit feeding an exponential', L, 40);
+  g.fillStyle = COL.after;
+  g.fillText('after  —  one critically damped filter', L + 430, 40);
+  g.fillStyle = COL.text;
+  g.font = '13px system-ui, sans-serif';
+  g.fillText('60 fps, 120 Hz physics, stage seed 22', L + 900, 40);
+
+  window.__plotReady = true;
+})();
+</script>

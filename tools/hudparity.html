@@ -1,0 +1,357 @@
+<!doctype html>
+<!-- Both HUDs on one page: the shipping one and the pre-countdown copy in
+     .work/base. Nothing here draws the game; the overlay is pure Canvas 2D. -->
+<meta charset="utf-8">
+<title>redrock — hud parity</title>
+<style>html,body{margin:0;background:#4a4038}canvas{display:block}</style>
+<canvas id="a"></canvas>
+<canvas id="b"></canvas>
+<script type="module">
+import { Hud as Now } from '../src/ui/hud.js';
+import { Hud as Before } from '../.work/base/hud-before.js';
+import { Countdown } from '../src/race/countdown.js';
+import { Ending } from '../src/race/ending.js';
+import { Title } from '../src/ui/title.js';
+import { Pause } from '../src/ui/pause.js';
+
+const course = { length: 5598, points: [] };
+for (let i = 0; i <= 160; i++) {
+  const t = i / 160;
+  course.points.push({ s: t * course.length, y: 940 - 467 * t + Math.sin(t * 9.1) * 24 });
+}
+
+const make = (Ctor, id) => {
+  const hud = new Ctor(document.getElementById(id));
+  hud.setCourse(course);
+  return hud;
+};
+const huds = { now: make(Now, 'a'), before: make(Before, 'b') };
+
+/** Settle both from a cold spring with identical steps, then read back. */
+function shot(which, w, h, dpr, state, extra) {
+  const hud = huds[which];
+  hud.needle = 0; hud.needleVel = 0;
+  hud.resize(w, h, dpr);
+  for (let i = 0; i < 240; i++) hud.update(1 / 60, state);
+  if (extra) hud.update(0, extra);
+  hud.draw();
+  const g = hud.canvas.getContext('2d');
+  return g.getImageData(0, 0, hud.canvas.width, hud.canvas.height);
+}
+
+window.__parity = {
+  huds,
+  /* The real payload at a real moment, stepped there in 1/60 wall-clock
+     frames exactly as the game would — so the sizes reported below are the
+     sizes the sequence actually produces and not a hand-written guess at
+     them. That guess was wrong once already. */
+  at(seconds) {
+    const cd = new Countdown();
+    cd.arm();
+    for (let i = 0; i < Math.round(seconds * 60); i++) cd.update(1 / 60, 1);
+    return cd.display();
+  },
+  /** Pixel-for-pixel comparison of the two builds in the same state. */
+  compare(w, h, dpr, state) {
+    const a = shot('now', w, h, dpr, state);
+    const b = shot('before', w, h, dpr, state);
+    let diff = 0, worst = 0;
+    for (let i = 0; i < a.data.length; i++) {
+      const d = Math.abs(a.data[i] - b.data[i]);
+      if (d) { diff++; if (d > worst) worst = d; }
+    }
+    return { bytes: a.data.length, diff, worst, hash: fnv(a.data), hashBefore: fnv(b.data) };
+  },
+  /** The countdown alone: what it draws and how big it is, in pixels. */
+  countdown(w, h, dpr, state, cd) {
+    const hud = huds.now;
+    hud.needle = 0; hud.needleVel = 0;
+    hud.resize(w, h, dpr);
+    for (let i = 0; i < 240; i++) hud.update(1 / 60, { ...state, countdown: null });
+    hud.draw();
+    const g = hud.canvas.getContext('2d');
+    const W = hud.canvas.width, H = hud.canvas.height;
+    const plain = g.getImageData(0, 0, W, H).data;
+    hud.update(0, { ...state, countdown: cd });
+    hud.draw();
+    const withIt = g.getImageData(0, 0, W, H).data;
+    let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, px = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        let d = 0;
+        for (let k = 0; k < 4; k++) d += Math.abs(plain[i + k] - withIt[i + k]);
+        if (d < 8) continue;
+        px++;
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+    return { W, H, px, box: px ? [x0, y0, x1 - x0 + 1, y1 - y0 + 1] : null,
+      png: hud.canvas.toDataURL('image/png') };
+  },
+  /* The shell screens' payloads, stepped the way the game steps them so the
+     sizes below are the sizes the states actually produce. Both are past
+     their entrance by the time they are asked, which is the only moment
+     either one is ever photographed — see the dormancy note in title.js. */
+  titleAt(seconds) {
+    const t = new Title();
+    t.arm();
+    for (let i = 0; i < Math.round(seconds * 60); i++) t.update(1 / 60);
+    return t.display();
+  },
+  pauseAt(seconds, index) {
+    const p = new Pause();
+    p.enabled = true;
+    p.open();
+    for (let i = 0; i < (index | 0); i++) p.move(1);
+    for (let i = 0; i < Math.round(seconds * 60); i++) p.update(1 / 60);
+    return p.display();
+  },
+  /**
+   * An overlay alone, in device pixels: the same frame with and without it,
+   * differenced.
+   *
+   * Separate from countdown() above rather than folded into it because the
+   * box here is taken from per-row and per-column counts with a floor of two,
+   * and countdown()'s is a plain min/max. The floor exists because compositing
+   * the pause plate flips exactly one antialiased pixel on the speedometer's
+   * left tangent by 21 of a possible 1020 — invisible, reproducible, and
+   * enough on its own to widen a plain bounding box by 72%. A box takes its
+   * four numbers from four single pixels, so it is the most outlier-sensitive
+   * statistic in this file. `stray` reports what the floor dropped, so this
+   * can never quietly swallow a second and larger thing.
+   */
+  overlay(w, h, dpr, state, off, on) {
+    const hud = huds.now;
+    /* Every overlay key the HUD has a branch for, forced null before either
+       frame. Deriving the off-state by nulling only the keys the caller set
+       is not enough: an earlier call leaves its own overlay live in
+       hud.state, a live title makes draw() return before it reaches anything
+       else, and the first version of this reported the pause menu AND the
+       traffic strip section below it as drawing nothing at all. Both frames
+       are built from a stated slate, and the slate is restored on the way
+       out so this cannot cost the next tool its result either. */
+    const CLEAR = { countdown: null, ending: null, title: null, pause: null, rivals: null };
+    hud.needle = 0; hud.needleVel = 0;
+    hud.resize(w, h, dpr);
+    for (let i = 0; i < 240; i++) hud.update(1 / 60, { ...state, ...CLEAR, ...off });
+    hud.draw();
+    const g = hud.canvas.getContext('2d');
+    const W = hud.canvas.width, H = hud.canvas.height;
+    const plain = g.getImageData(0, 0, W, H).data;
+    hud.update(0, { ...state, ...CLEAR, ...on });
+    hud.draw();
+    const withIt = g.getImageData(0, 0, W, H).data;
+    /* Drawn a second time from the same state, to the same canvas. The HUD's
+       only memory is the needle spring and update(0) cannot move it, so a
+       difference here would mean the overlay reads a clock — the one failure
+       that would degrade every capture tool in this directory. */
+    hud.draw();
+    const again = g.getImageData(0, 0, W, H).data;
+    let repeat = 0;
+    for (let i = 0; i < withIt.length; i++) if (withIt[i] !== again[i]) repeat++;
+
+    const rowN = new Int32Array(H), colN = new Int32Array(W);
+    let px = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        let d = 0;
+        for (let k = 0; k < 4; k++) d += Math.abs(plain[i + k] - withIt[i + k]);
+        if (d < 8) continue;
+        px++; rowN[y]++; colN[x]++;
+      }
+    }
+    const span = (a) => {
+      let lo = -1, hi = -1;
+      for (let i = 0; i < a.length; i++) if (a[i] >= 2) { if (lo < 0) lo = i; hi = i; }
+      return [lo, hi];
+    };
+    const [x0, x1] = span(colN), [y0, y1] = span(rowN);
+    let kept = 0;
+    for (let y = y0; y <= y1 && y0 >= 0; y++) kept += rowN[y];
+    const png = hud.canvas.toDataURL('image/png');
+    hud.update(0, { ...state, ...CLEAR });
+    hud.draw();
+    return { W, H, px, stray: px - kept, repeat,
+      box: x0 < 0 ? null : [x0, y0, x1 - x0 + 1, y1 - y0 + 1], png };
+  },
+  /* The ending's payload at a real moment, stepped there in 1/60 wall frames
+     the way the game steps it. Fed a fixed classification so the card's size
+     is a property of the card and not of whatever race produced it. */
+  endingAt(seconds, rows, won) {
+    const e = new Ending();
+    e.arm();
+    e.running = true;
+    e.rows = rows;
+    e.won = won;
+    for (let i = 0; i < Math.round(seconds * 60); i++) e.t += 1 / 60;
+    return e.display();
+  },
+  /**
+   * The traffic strip alone, in device pixels.
+   *
+   * Differenced against the same frame with `rivals` null, which is the state
+   * the compare() above proves is unchanged — so what is left is the strip and
+   * nothing else, measured rather than admired. Same treatment as the countdown
+   * and the card, for the same reason: this project's standing complaint is
+   * mechanisms that are correct in simulation and three pixels tall in frame.
+   *
+   * Also reports the markers individually, by ablation: draw the frame, drop
+   * one rival, draw again, difference. That counts only the pixels that one
+   * car's mark owns, through its own ink ring, which is the number that says
+   * whether a rival reads at all.
+   */
+  rivals(w, h, dpr, state, rows) {
+    const hud = huds.now;
+    hud.needle = 0; hud.needleVel = 0;
+    hud.resize(w, h, dpr);
+    for (let i = 0; i < 240; i++) hud.update(1 / 60, { ...state, rivals: null });
+    const g = hud.canvas.getContext('2d');
+    const W = hud.canvas.width, H = hud.canvas.height;
+    hud.draw();
+    const plain = g.getImageData(0, 0, W, H).data;
+    hud.update(0, { ...state, rivals: rows });
+    hud.draw();
+    const withIt = g.getImageData(0, 0, W, H).data;
+
+    const box = (a, b) => {
+      let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, px = 0;
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const i = (y * W + x) * 4;
+          let d = 0;
+          for (let k = 0; k < 4; k++) d += Math.abs(a[i + k] - b[i + k]);
+          if (d < 8) continue;
+          px++;
+          if (x < x0) x0 = x; if (x > x1) x1 = x;
+          if (y < y0) y0 = y; if (y > y1) y1 = y;
+        }
+      }
+      return { px, box: px ? [x0, y0, x1 - x0 + 1, y1 - y0 + 1] : null };
+    };
+
+    /* Each rival's own mark. Removed from the list rather than hidden, which is
+       the same ablation tools/kwshot.mjs uses on the cars themselves. */
+    const each = [];
+    for (const r of rows) {
+      if (r.isPlayer) continue;
+      hud.update(0, { ...state, rivals: rows.filter(x => x !== r) });
+      hud.draw();
+      const without = g.getImageData(0, 0, W, H).data;
+      const b = box(withIt, without);
+      each.push({
+        name: r.name, ds: Math.round(r.s - state.progress * 5598),
+        px: b.px, w: b.box ? b.box[2] : 0, h: b.box ? b.box[3] : 0,
+        x: b.box ? b.box[0] : null,
+      });
+    }
+    hud.update(0, { ...state, rivals: rows });
+    hud.draw();
+    return { W, H, ...box(plain, withIt), each,
+      png: hud.canvas.toDataURL('image/png') };
+  },
+
+  /**
+   * The strip's chequered bar alone, in device pixels.
+   *
+   * Ablated by straddling its own cut-off rather than by suppressing it: two
+   * states are built with the line 1 m either side of RIV_FLAG and with each
+   * rival's station rebuilt from the same GAP, so every gap the strip draws is
+   * identical in both frames and the marks land on the same pixels. The bar is
+   * then the only thing that differs. Restricted to the strip's plate, because
+   * the elevation card's own player dot moves by a fifth of a pixel between the
+   * two progress values and is not what is being measured.
+   */
+  flagbar(w, h, dpr, state, gaps, left, len) {
+    const hud = huds.now;
+    hud.needle = 0; hud.needleVel = 0;
+    hud.resize(w, h, dpr);
+    const g = hud.canvas.getContext('2d');
+    const W = hud.canvas.width, H = hud.canvas.height;
+    const at = (remain) => {
+      const s = len - remain;
+      const rows = gaps.map(([name, pal, ds], i) => ({
+        position: i + 1, name, isPlayer: false, finished: false,
+        car: { palette: pal }, s: s + ds,
+      }));
+      rows.push({ position: rows.length + 1, name: 'PLAYER', isPlayer: true,
+        finished: false, car: { palette: 0 }, s });
+      return { ...state, progress: s / len, rivals: rows };
+    };
+    for (let i = 0; i < 240; i++) hud.update(1 / 60, at(left));
+    hud.draw();
+    const on = g.getImageData(0, 0, W, H).data;
+    hud.update(0, at(left + 2));
+    hud.draw();
+    const off = g.getImageData(0, 0, W, H).data;
+    const S = hud.L.strip, k = dpr;
+    const [rx, ry, rw, rh] = [S.x * k, S.y * k, S.w * k, S.h * k];
+    let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, px = 0, out = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        let d = 0;
+        for (let k2 = 0; k2 < 4; k2++) d += Math.abs(on[i + k2] - off[i + k2]);
+        if (d < 8) continue;
+        if (x < rx || x > rx + rw || y < ry || y > ry + rh) { out++; continue; }
+        px++;
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+    return { px, outside: out, box: px ? [x0, y0, x1 - x0 + 1, y1 - y0 + 1] : null };
+  },
+
+  /**
+   * The results card alone, in device pixels.
+   *
+   * Differenced against the same frame with the card's own alpha at zero
+   * rather than against a frame with no ending at all, which is the whole
+   * trick: the ending also dims the rest of the HUD, so a naive difference
+   * reports every lit pixel on the screen. An earlier run of tools/finish.mjs
+   * did exactly that and reported the card as 88.5% of the frame. Holding
+   * `dim` equal on both sides leaves the card and its prompt as the only
+   * things that changed.
+   */
+  ending(w, h, dpr, state, end) {
+    const hud = huds.now;
+    hud.needle = 0; hud.needleVel = 0;
+    hud.resize(w, h, dpr);
+    for (let i = 0; i < 240; i++) hud.update(1 / 60, { ...state, ending: null });
+    const g = hud.canvas.getContext('2d');
+    const W = hud.canvas.width, H = hud.canvas.height;
+    hud.update(0, { ...state, ending: { ...end, alpha: 0, prompt: 0 } });
+    hud.draw();
+    const dimOnly = g.getImageData(0, 0, W, H).data;
+    hud.update(0, { ...state, ending: end });
+    hud.draw();
+    const withIt = g.getImageData(0, 0, W, H).data;
+    let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, px = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        let d = 0;
+        for (let k = 0; k < 4; k++) d += Math.abs(dimOnly[i + k] - withIt[i + k]);
+        if (d < 8) continue;
+        px++;
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+    return { W, H, px, box: px ? [x0, y0, x1 - x0 + 1, y1 - y0 + 1] : null,
+      png: hud.canvas.toDataURL('image/png') };
+  },
+};
+
+function fnv(a) {
+  let h1 = 0x811c9dc5, h2 = 0x01000193;
+  for (let i = 0; i < a.length; i++) {
+    h1 ^= a[i]; h1 = Math.imul(h1, 0x01000193);
+    h2 = Math.imul(h2 ^ a[i], 0x85ebca6b);
+  }
+  return (h1 >>> 0).toString(16).padStart(8, '0')
+    + (h2 >>> 0).toString(16).padStart(8, '0');
+}
+</script>

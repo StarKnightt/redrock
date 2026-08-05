@@ -1,0 +1,122 @@
+<!doctype html>
+<!-- Standalone colour-chart page for tools/gamut.mjs.
+
+     Deliberately does not load src/main.js. The chart only exercises the value
+     ladder and the composite grade, and booting the whole game to measure two
+     files means the instrument stops working every time somebody is halfway
+     through rebuilding the world — which is exactly when a palette question is
+     most likely to be asked. Renderer setup is copied from main.js and has to
+     stay in step with it: tone mapping, colour space and the absence of any
+     automatic encode on the composite are all load-bearing for what comes back
+     out of readPixels. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>redrock gamut chart</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "/node_modules/three/build/three.module.js" } }
+</script>
+</head>
+<body>
+<canvas id="view"></canvas>
+<script type="module">
+import * as THREE from 'three';
+import { celMaterial, setPosterize } from '/src/render/cel.js';
+import { CelPipeline } from '/src/render/outline.js';
+
+const canvas = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({
+  canvas, antialias: true, powerPreference: 'high-performance', stencil: false,
+});
+renderer.setPixelRatio(1);
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+/* No fog and no background: a swatch has to arrive at the composite as the
+   colour it was authored as, or the chart is measuring the fog. */
+const camera = new THREE.OrthographicCamera(0, 1, 1, 0, -1, 1);
+
+const pipeline = new CelPipeline(renderer, scene, camera, { outlines: false });
+/* The vignette is a spatial effect rather than a colour transform, and a chart
+   that spans the frame puts half its cells inside it — which reads back as a
+   hue shift belonging to the corner. */
+pipeline.vignetteEnabled = false;
+
+let grid = { rows: 0, cols: 0 };
+
+window.__gamut = {
+  build(chart, w, h) {
+    canvas.width = w; canvas.height = h;
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    renderer.setSize(w, h, false);
+    pipeline.setSize(w, h);
+
+    for (const child of [...scene.children]) {
+      child.geometry.dispose(); child.material.dispose(); scene.remove(child);
+    }
+    const rows = chart.length, cols = chart[0][1].length;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        /* The real cel material, forced unlit. Lighting a swatch would fold
+           the toon ramp's own colour into the measurement, and the question
+           here is what the ladder and the grade do to a colour — not what the
+           key light does to it. */
+        const m = celMaterial({ color: chart[r][1][c], fog: false });
+        const inner = m.onBeforeCompile;
+        m.onBeforeCompile = sh => {
+          inner(sh);
+          sh.fragmentShader = sh.fragmentShader.replace(
+            '#include <opaque_fragment>',
+            'outgoingLight = diffuseColor.rgb;\n#include <opaque_fragment>',
+          );
+        };
+        m.customProgramCacheKey = () => 'gamut-unlit';
+        const q = new THREE.Mesh(new THREE.PlaneGeometry(1 / cols, 1 / rows), m);
+        q.position.set((c + 0.5) / cols, 1 - (r + 0.5) / rows, 0);
+        scene.add(q);
+      }
+    }
+    grid = { rows, cols };
+  },
+
+  stage(ladder, grade) {
+    setPosterize(ladder);
+    pipeline.gradeEnabled = grade;
+  },
+
+  shoot() {
+    pipeline.render();
+    return canvas.toDataURL('image/png');
+  },
+
+  /* Centre pixel of every cell, read back inside the same task as the render:
+     the drawing buffer is not preserved and is gone by the next one. */
+  sample() {
+    pipeline.render();
+    const gl = renderer.getContext();
+    const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+    const buf = new Uint8Array(w * h * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    const out = [];
+    for (let r = 0; r < grid.rows; r++) {
+      const line = [];
+      for (let c = 0; c < grid.cols; c++) {
+        const x = Math.round(((c + 0.5) / grid.cols) * w);
+        const y = Math.round(((r + 0.5) / grid.rows) * h);
+        const i = ((h - 1 - y) * w + x) * 4;
+        line.push([buf[i], buf[i + 1], buf[i + 2]]);
+      }
+      out.push(line);
+    }
+    return out;
+  },
+};
+</script>
+</body>
+</html>

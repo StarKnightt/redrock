@@ -1,0 +1,22 @@
+{
+  "name": "redrock",
+  "version": "1.0.0",
+  "description": "Cel-shaded downhill rally. Procedural everything, zero external assets.",
+  "main": "index.js",
+  "scripts": {
+    "serve": "node tools/serve.mjs",
+    "shoot": "node tools/shoot.mjs",
+    "check": "node tools/check.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  },
+  "type": "module",
+  "private": true
+}

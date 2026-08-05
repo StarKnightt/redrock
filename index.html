@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>REDROCK — downhill</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1015; }
+  #view { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  #hud { position: fixed; inset: 0; pointer-events: none; }
+  #boot {
+    position: fixed; inset: 0; display: grid; place-items: center;
+    font: 500 12px/1.8 ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: .34em; text-transform: uppercase; color: #b8724f;
+    background: #1b1015; transition: opacity .5s ease;
+  }
+  #boot.gone { opacity: 0; pointer-events: none; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "/node_modules/three/build/three.module.js" } }
+</script>
+</head>
+<body>
+<canvas id="view"></canvas>
+<canvas id="hud"></canvas>
+<div id="boot">redrock</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

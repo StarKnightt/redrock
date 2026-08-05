@@ -1,0 +1,66 @@
+<!doctype html>
+<!-- Standalone HUD proofing page. No game, no GL: just the overlay canvas on
+     a flat warm backdrop, driven by tools/hud.mjs through window.__hud. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>redrock hud proof</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #caa06e; }
+  canvas { position: absolute; left: 0; top: 0; }
+</style>
+</head>
+<body>
+<canvas id="hud"></canvas>
+<script type="module">
+import { Hud } from '/src/ui/hud.js';
+
+const canvas = document.getElementById('hud');
+const hud = new Hud(canvas);
+
+/* A stand-in course with the real stage's numbers: 5.6 km, 467 m of drop.
+   Deterministic sums of sines — steep opening wall, a mid-stage shelf, and a
+   run-out to the valley floor, so the silhouette has features to read. */
+const LEN = 5600, DROP = 467;
+const raw = [];
+for (let i = 0; i < 160; i++) {
+  const t = i / 159;
+  const ease = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+  const shelf = 0.045 * Math.exp(-Math.pow((t - 0.52) / 0.07, 2));
+  const wobble = 0.018 * Math.sin(t * 19) + 0.010 * Math.sin(t * 43 + 1.7);
+  raw.push(ease - shelf + wobble * (1 - t));
+}
+// Rescale so the card's drop label reads the stage's exact 467 m.
+const lo = Math.min(...raw), hi = Math.max(...raw);
+const points = raw.map((v, i) => ({
+  s: (i / 159) * LEN,
+  y: 620 - DROP * ((v - lo) / (hi - lo)),
+}));
+hud.setCourse({ length: LEN, points });
+
+window.__hud = {
+  hud,
+  /* Render one deterministic proof frame: size the canvas, feed the state
+     through enough fixed steps for the needle spring to arrive, then draw and
+     composite over flat backdrop bands so the PNG shows the HUD in situ. */
+  shoot(w, h, dpr, state, settle = 2.5) {
+    hud.resize(w, h, dpr);
+    hud.needle = 0; hud.needleVel = 0;
+    const steps = Math.round(settle * 120);
+    for (let i = 0; i < steps; i++) hud.update(1 / 120, state);
+    hud.draw();
+
+    const out = document.createElement('canvas');
+    out.width = canvas.width; out.height = canvas.height;
+    const g = out.getContext('2d');
+    g.fillStyle = '#d9a05f';
+    g.fillRect(0, 0, out.width, out.height);
+    g.fillStyle = '#b3714a';
+    g.fillRect(0, out.height * 0.62, out.width, out.height);
+    g.drawImage(canvas, 0, 0);
+    return out.toDataURL('image/png');
+  },
+};
+</script>
+</body>
+</html>

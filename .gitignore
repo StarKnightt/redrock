@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Capture and measurement output.
+# These directories hold screenshots, video frames and probe results produced by
+# the tools in tools/. They are reproducible from source and total several
+# gigabytes, so they are deliberately not tracked.
+out/
+shots/
+.work/
+.meas/
+.critic/
+.fix/
+
+# Media
+*.mp4
+*.webm
+
+# Editor and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Stray shell artefacts
+--x
+
+# Internal working notes from development rounds
+.spec_extract.md

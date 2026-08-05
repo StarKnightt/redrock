@@ -23,11 +23,22 @@ const REWRITTEN = '"three": "./vendor/three.module.js"';
 
 /* Social card metadata, injected here rather than into index.html so the file
    the capture suite photographs is never touched by a hosting concern. */
+const SITE = 'https://starknightt.github.io/redrock/';
+
+/* Scrapers do not resolve relative image URLs, so og:image has to be absolute
+   even though everything else on the page is deliberately relative. */
 const META = `<meta name="description" content="A cel-shaded downhill racing game built in Three.js. Every mesh, texture and sound is generated procedurally in code — no external assets.">
 <meta property="og:type" content="website">
+<meta property="og:url" content="${SITE}">
 <meta property="og:title" content="redrock — procedural cel-shaded downhill racing">
 <meta property="og:description" content="A coastal mountain descent against three rivals. No models, no textures, no audio files: the entire world is generated in code at load time.">
+<meta property="og:image" content="${SITE}social.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="redrock — procedural cel-shaded downhill racing">
+<meta name="twitter:description" content="A coastal mountain descent against three rivals. Every asset generated in code at load time.">
+<meta name="twitter:image" content="${SITE}social.png">
 `;
 
 async function exists(p) {
@@ -65,6 +76,15 @@ async function main() {
   await writeFile(join(dist, 'index.html'), html);
   await cp(join(root, 'src'), join(dist, 'src'), { recursive: true });
   await cp(THREE_SRC, join(dist, 'vendor', 'three.module.js'));
+
+  /* The link-preview card. Fail rather than deploy a page whose og:image is a
+     404, which renders as a broken card everywhere it is shared. */
+  const card = join(root, 'social.png');
+  if (!await exists(card)) {
+    console.error('  ✗ social.png is missing — og:image would 404');
+    process.exit(1);
+  }
+  await cp(card, join(dist, 'social.png'));
 
   /* Pages runs Jekyll by default, which drops files and folders beginning with
      an underscore. Nothing here starts with one today, but a future source file

@@ -87,75 +87,15 @@ const LIFT = {
      put snow on the tunnel floor, so "the most" is not much. */
   plume: 1.86,
   drift: 1.74,
-  /* Seen flat against tarmac from four metres, where the plume's value is a
-     bank of snow. The curtain carries the read; the sheet is nearly ground. */
+  /* The landing plume, seen flat against tarmac from four metres, where the
+     full plume value is a bank of snow. */
   burstWall: 1.55,
-  burstSheet: 1.22,
   /* Torn air rather than lifted dirt: barely off the road at all. */
   wake: 1.08,
   /* Thrown grit is solid, and solid belongs on the ground's own rungs. */
   debris: 0.94,
 };
 
-/* Twelve, and measured rather than assumed.
- *
- * Twenty-four was tried, on the theory that the tall thin fins standing at the
- * ends of the visible arc were foreshortened chords — a two-metre chord under
- * a four-metre wall becomes two metres of *depth* when it turns edgewise, and
- * a quad whose near end is closer than its far end projects as a wedge. It is
- * a good theory and it is not what was happening. Rendering the ring with each
- * segment painted a different colour, and then each segment on its own, showed
- * the fins were ordinary broadside quads with a spike in the middle of them,
- * and halving the chord made the fins narrower rather than fewer. The cause
- * was in the crown, not in the ring: see the tearing wavelength below.
- *
- * Twenty-four also cost real coverage — the pool's own estimate at peak went
- * from 0.61 to 1.09 against a 1.40 soft knee, because rotating twice as many
- * near-flank quads to face the lens overlaps twice as much — so it bought a
- * governor problem in exchange for nothing. Left at twelve. */
-const WALL_SEGMENTS = 12;
-/* Half the tangential reach of a curtain segment, as a multiple of the ring
-   radius, and also the constant the fragment shader needs to turn a position
-   along a segment back into a world angle.
- *
- * tan(pi/N) rather than anything larger, so the twelve chords form a
- * circumscribed polygon whose corners meet exactly: neighbours share their end
- * vertices and never cover the same ground twice. Overlapping them was worse
- * than it sounds — two opaque quads over the same pixels are resolved by
- * depth, the winner changes along the overlap, and the swap leaves a hard
- * crease. A ring of creases is a ring of facets, which is the one thing this
- * effect cannot afford to look like.
- */
-const ARC_HALF = Math.tan(Math.PI / WALL_SEGMENTS);
-/* Where a chord stops being a chord.
- *
- * A ring of twelve tangential quads is a good ring for ten of them and a bad
- * one for two: at the points where the tangent runs down the eye ray, the
- * quad is a wall standing edgewise to the camera. Its two metres of length
- * are then two metres of *depth*, so it projects as a narrow wedge whose near
- * end is closer — and therefore taller — than its far end. That wedge is the
- * "tan needle": not debris, not a shard, just the one segment per flank that
- * the approximation cannot draw. Widening it on screen, which is what this
- * used to do, made the needle thicker without making it stop being a wedge,
- * because the depth extent it comes from was never touched.
- *
- * So the two that cannot be chords stop being chords. As a segment turns
- * end-on its run direction rotates off the ring's tangent and onto the
- * horizontal that faces the camera, which is the same slab of dust seen
- * square instead of edgewise — the cross-section the old floor was standing
- * in for, drawn rather than faked. The blend is over facing, so it is
- * identically zero for every segment that is broadside enough to draw
- * honestly: ten of the twelve keep the exact tangential placement that makes
- * neighbours meet to the pixel, and only the degenerate pair moves.
- *
- * This is the answer to "a ring built out of camera-facing quads is a ring
- * from exactly one camera", which is why the whole curtain is not built that
- * way: it is true, and it is only true of the quads that have a choice. */
-const WALL_BROADSIDE = 0.95;
-const WALL_END_ON = 0.20;
-/* The ground sheet's annulus sits at 0.74 of its quad, so the quad has to be
-   this much wider than the ring it carries. */
-const SHEET_QUAD = 2.0 / 0.74;
 /* What a round puff's quad is enlarged by so that a shape normalised to fit
    inside it draws at the size it drew when it was overhanging and clipped.
    Measured against the mean fit factor plumeSdf now applies. */
@@ -195,29 +135,9 @@ const BURST_COLS = 2;
  * rate low enough to prevent that leaves anything to look at.
  *
  * NEAR_* collapses whatever gets inside touching distance. SCREEN_CAP limits
- * what remains to a share of the screen height. The burst gets a tighter near
- * window than the billboards because it is a ring lying on the road whose
- * segments must stay adjacent, and the window is where they stop agreeing. */
+ * what remains to a share of the screen height. */
 const NEAR_GONE = 1.10;
 const NEAR_FULL = 3.20;
-/* The burst's window is a multiple of the instance's own vertical extent
-   rather than a distance in metres, and that is a repair rather than a
-   refinement. As two fixed metres it was written against the only burst that
-   existed — a 1.16 m berm curtain, for which 0.45 and 1.30 m are the numbers
-   below multiplied out almost exactly — and it silently stopped meaning
-   anything when `scale` arrived and let a ramp landing stand a curtain four
-   times as tall. A four-metre wall that is only collapsed inside 1.3 m
-   reaches the lens at full size: measured frame by frame through the real
-   chase camera, the near arc of a full ramp ring arrived two metres from the
-   lens with four metres of curtain still standing and filled the bottom third
-   of the frame with an opaque pale mass. That is invariant 1's own failure
-   case — "one puff three metres wide two metres from the lens does it on its
-   own" — reappearing through a route the constant could not see.
-   Scaled, a berm curtain keeps the window it was tuned with and a ramp
-   curtain begins giving way five metres out, which is about where the eye
-   would expect to be able to see into a cloud it is entering. */
-const BURST_NEAR_GONE = 0.38;
-const BURST_NEAR_FULL = 1.12;
 /* The quad's full extent, in half-screens: 1.0 lets one instance span half
    the screen's height and no more. This is a backstop for the pathological
    single puff, not the volume control — the aggregate is the governor's job
@@ -277,20 +197,14 @@ varying float vSpread;
    thing a mass of overlapping puffs cannot survive as one mass — see the fade
    keyed to it in the burst's painting. */
 varying float vShrink;
-/* Burst only: the angle this segment sits at around the ring, the ring's
-   present radius, and how squarely the camera is looking at the quad. The
-   radius is what lets the fragment shader measure itself in metres of arc
-   rather than in radians — detail sized in radians is fine across a whole
-   ring and far too coarse when the camera is close enough to see one segment
-   of it, which is exactly the shot a low chase camera takes. */
-varying vec3 vSeg;
-varying vec3 vFace;
-varying vec3 vAlong;
+/* Landing-plume puffs only: where this puff's centre sits in the plume's
+   height and how much of it the puff spans, both as fractions of the whole
+   mass — see the packing where it is written. Zero for every other kind. */
+varying vec2 vSeg;
 varying vec3 vColor;
 
 void main() {
   vec4 mv;
-  vAlong = vec3(1.0, 0.0, 0.0);
 
   /* Lens guard. Every class is sized through aScale from here down; nothing
      below reads the attribute directly, so a class added later inherits both
@@ -299,98 +213,28 @@ void main() {
      a share of the screen's half-height and makes the cap independent of the
      field of view the camera happens to be running. */
   float lensDepth = -(viewMatrix * vec4(aCenter, 1.0)).z;
-  /* The two world-placed ring primitives, and only those. The landing plume's
-     puffs are kind 5 and are billboards like every other puff, so they take
-     the billboard near window and the screen cap rather than the ring's
-     looser, height-scaled one — see BURST_PUFF_KIND. */
-  float isBurst = step(2.5, aKind) * (1.0 - step(4.5, aKind));
-  float burstReach = max(aScale.y, 0.35);
-  float near = mix(
-    smoothstep(${NEAR_GONE.toFixed(2)}, ${NEAR_FULL.toFixed(2)}, lensDepth),
-    smoothstep(burstReach * ${BURST_NEAR_GONE.toFixed(2)},
-               burstReach * ${BURST_NEAR_FULL.toFixed(2)}, lensDepth),
-    isBurst);
+  float near = smoothstep(${NEAR_GONE.toFixed(2)}, ${NEAR_FULL.toFixed(2)}, lensDepth);
   float halfScreens = max(aScale.x, aScale.y) / max(lensDepth, 0.01)
     * projectionMatrix[1][1];
   float fit = min(1.0, ${SCREEN_CAP.toFixed(2)} / max(halfScreens, 0.0001));
-  float shrink = near * mix(fit, 1.0, isBurst);
+  float shrink = near * fit;
   vShrink = shrink;
   vec2 scale = aScale * shrink;
 
-  vSeg = vec3(aRotation, scale.x * ${(0.5 / ARC_HALF).toFixed(5)}, 1.0);
+  vSeg = vec2(0.0, 0.0);
   /* Where this puff sits in the plume it belongs to, and how much of the plume's
      height it spans — both as fractions of the whole mass, so the fragment
      shader can paint every puff of a landing off one tonal solution instead of
-     shading each as a ball of its own. The two are packed into the one spare
-     float the burst path has, the same way the carry vector borrows the spin,
-     drag and buoyancy slots: the integer part carries the centre in
+     shading each as a ball of its own. The two are packed into aRotation, the
+     one spare float this kind has, the same way the carry vector borrows the
+     spin, drag and buoyancy slots: the integer part carries the centre in
      five-hundredths, the fraction carries the half-extent. */
   if (aKind > 4.5) {
-    vSeg = vec3(floor(aRotation) / 512.0, scale.x * ${(0.5 / ARC_HALF).toFixed(5)},
-      fract(aRotation));
+    vSeg = vec2(floor(aRotation) / 512.0, fract(aRotation));
   }
-  /* Everything else here is a billboard, because everything else here is a
-     puff of gas with no orientation of its own. The landing burst has one: it
-     is a ring lying on the road, and a ring built out of camera-facing quads
-     is a ring from exactly one camera. These two kinds are placed in the
-     world and left there. */
-  if (aKind > 3.5 && aKind < 4.5) {
-    /* Curtain segment: a wall standing on the road, running along the ring
-       tangent that aAxis carries, facing out of the ring. It is raised in the
-       view plane rather than in the world so that its width can be given a
-       floor — the projected tangent supplies the foreshortening a real wall
-       would have, and the floor keeps the two end-on segments from collapsing
-       into hairlines. Its height is world up, projected, so the curtain still
-       shortens correctly as the camera climbs. */
-    vec3 tangent = normalize(aAxis);
-    vec3 tangentView = (viewMatrix * vec4(tangent, 0.0)).xyz;
-    vec3 riseView = (viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz;
-    mv = viewMatrix * vec4(aCenter, 1.0);
-    /* Placed exactly where the world quad is, so that the twelve chords, which
-       share their corner vertices, meet to the pixel; flattening each quad to
-       its own centre's depth, as this did at first, moved that shared corner
-       by however much the two depths differed and left a vertical step down
-       the join.
-     *
-     * Except at the flanks, where there is no placement that works and the
-     * segment is turned to face the lens instead. The direction it turns onto
-     * is horizontal in the world and square to the eye ray, so the slab stays
-     * a wall standing on the road — it is rotated about its own vertical, not
-     * tipped toward the camera. Its sign is taken from the tangent it is
-     * leaving so the turn is the shorter way round; the two agree to within a
-     * hair by the time the blend has any weight, and where they do not the
-     * quad is symmetric in position.x and a flip only mirrors a noise field. */
-    float facing = length(tangentView.xy);
-    vec3 sideView = normalize(cross(riseView, normalize(mv.xyz)) + vec3(0.00001, 0.0, 0.0));
-    sideView *= dot(sideView, tangentView) < 0.0 ? -1.0 : 1.0;
-    float endOn = smoothstep(${WALL_BROADSIDE.toFixed(2)}, ${WALL_END_ON.toFixed(2)}, facing);
-    vec3 runView = normalize(mix(tangentView, sideView, endOn));
-    mv.xyz += runView * (position.x * scale.x) + riseView * (position.y * scale.y);
-    vFace = normalize((viewMatrix * vec4(cross(vec3(0.0, 1.0, 0.0), tangent), 0.0)).xyz);
-    vAlong = runView;
-    /* The wall's height in metres. Every proportion of the crown contour is a
-       fraction of it, so the contour has to know how large a fraction is. */
-    vSeg.z = scale.y;
-  } else if (aKind > 2.5 && aKind < 3.5) {
-    /* Ground sheet: flat in the road plane whose normal aAxis carries. */
-    vec3 axis = normalize(aAxis);
-    vec3 ref = abs(axis.y) > 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
-    vec3 ux = normalize(cross(ref, axis));
-    vec3 uy = cross(axis, ux);
-    vec3 world = aCenter + ux * (position.x * scale.x) + uy * (position.y * scale.y);
-    mv = viewMatrix * vec4(world, 1.0);
-    /* The sheet is flat, so its own normal says nothing about which part of it
-       faces the sun. Its two in-plane axes do, and the fragment knows where in
-       them it sits. */
-    vFace = normalize((viewMatrix * vec4(ux, 0.0)).xyz);
-    vAlong = normalize((viewMatrix * vec4(uy, 0.0)).xyz);
-    /* How square the camera is to the road here. A flat ring lying on the
-       tarmac is the right primitive from above and a disaster from a low
-       chase camera: seen along the surface it stops being a ring and becomes
-       a pale swathe dragged halfway across the frame. It has to give way to
-       the curtain as the eye comes down to road level. */
-    vSeg.z = abs(dot(normalize((viewMatrix * vec4(axis, 0.0)).xyz), normalize(mv.xyz)));
-  } else {
+  /* Everything here is a billboard, because everything here is a puff of gas
+     with no orientation of its own. */
+  {
     /* An elongated billboard whose long axis is a world direction has to lose
        that length as the direction turns toward the lens, and this did not.
        normalize() threw the foreshortening away: the projected axis was scaled
@@ -442,7 +286,6 @@ void main() {
     vec2 local = along * position.x * extent.x + side * position.y * extent.y;
     mv = viewMatrix * vec4(aCenter, 1.0);
     mv.xy += local;
-    vFace = vec3(0.0, 0.0, 1.0);
     scale = extent;
   }
   gl_Position = projectionMatrix * mv;
@@ -463,9 +306,7 @@ varying float vKind;
 varying float vViewDepth;
 varying float vSpread;
 varying float vShrink;
-varying vec3 vSeg;
-varying vec3 vFace;
-varying vec3 vAlong;
+varying vec2 vSeg;
 varying vec3 vColor;`;
 
 /* ── Invariant 4: the silhouette the ink pass sees is the silhouette that is
@@ -599,301 +440,6 @@ float streakSdf(vec2 p, float seed) {
   float along = clamp((p.x + 0.78) / 1.56, 0.0, 1.0);
   float taper = pow(sin(along * 3.14159), 0.62);
   return abs(p.y) - 0.30 * taper * mix(1.0, 0.72, along);
-}
-
-/* The landing burst.
- *
- * Every earlier attempt at this drew N separate puffs around the wheels and
- * then tried to stop each one looking like a rock. That is the wrong problem.
- * A handful of bright convex silhouettes on grey tarmac at four metres is a
- * handful of objects whatever their outline, because the eye counts them
- * before it reads any of them. So the burst is not a set of objects at all: it
- * is two shapes, and the shape is what expands.
- *
- * The ground sheet is one annulus in the road plane, drawn inside a single
- * quad. It cannot be a scatter because it is one primitive, and it cannot be
- * a solid because it lies in the surface it would have to sit on.
- *
- * The curtain is a closed ring wall, cut into twelve overlapping segments only
- * because a quad cannot bend. Its top contour is a function of world angle
- * alone, so neighbouring segments agree along their shared arc and the union
- * is one continuous crown all the way round rather than twelve humps.
- */
-float burstWallAngle(vec2 p, vec3 seg) {
-  return seg.x + atan(p.x * ${ARC_HALF.toFixed(4)});
-}
-
-/* The curtain's top edge. Kept in its own function because the beauty pass
-   needs it twice — once for the silhouette and once to know how far up the
-   curtain a fragment is — and the ink pass needs it to agree to the pixel.
-   seg carries the world angle of the segment, the ring's radius and the
-   wall's height in metres, all three of which the contour is a function of. */
-float burstWallTop(float ang, vec3 seg, float age, float seed) {
-  float radius = seg.y;
-  /* How much of the wall has to be missing.
-   *
-   * Everything below is a fraction of the wall's own height, so a wall three
-   * times taller is the identical silhouette three times larger — and a
-   * silhouette that reads as a puff of dust at a metre reads as a bank of
-   * earth at four, because the eye sizes the tearing against the world and
-   * not against the shape. A ramp landing drawn this way was a closed opaque
-   * rampart with the car hidden behind it. So the one thing that does not
-   * scale with the height is how solid it is: the taller the curtain, the
-   * more of it is holes and the deeper the notches between its billows run.
-   * Tuned against the two ends that exist — a 1.16 m berm landing, which is
-   * where all the proportions came from and must not move, and the 3.9 m of
-   * a full ramp. */
-  float tall = smoothstep(1.35, 3.60, seg.z);
-  /* The crown has to swing nearly its own depth. A contour that varies by a
-     tenth is a parapet with a bit of wear on it — which is exactly what the
-     first version of this looked like — and a parapet is masonry. Tall billows
-     separated by saddles that come most of the way back to the road are what
-     makes the same closed ring read as gas instead. */
-  /* Weighted down the spectrum rather than concentrated at the bottom of it.
-     With two thirds of the swing in the second and third harmonics, the half
-     of the ring the camera can see is one and a half slow waves — two smooth
-     dunes with a saddle between them, which is a landform. The same total
-     swing spread across five harmonics and two noise octaves is a bank of
-     billows with smaller billows on their shoulders, and that is a cloud.
-     Same amplitude, same reach against the world; only the spectrum moved. */
-  float crown = 0.54
-    + 0.140 * sin(ang * 2.0 + seed * 6.2832)
-    + 0.150 * sin(ang * 3.0 - seed * 4.1)
-    + 0.150 * sin(ang * 5.0 + seed * 2.9)
-    + 0.095 * sin(ang * 8.0 - seed * 9.7);
-  crown += (valueNoise(vec2(ang * 2.6, 0.7) + seed * 5.0) - 0.5) * 0.22;
-  crown += (valueNoise(vec2(ang * 6.0, age * 0.8) + seed * 11.0) - 0.5) * 0.24;
-  /* And one term whose scale is set in metres of arc rather than in radians, so
-     the crown still has structure in it when the camera is close enough that
-     only a couple of metres of the ring are on screen.
-   *
-   * Metres of arc *of a berm landing*. This is the whole of the fin defect and
-   * it took three wrong answers to find. Every amplitude in this function is a
-   * fraction of the wall's height, on the sound argument that a wall three
-   * times taller should be the same silhouette three times larger. This term's
-   * wavelength was not: it was pinned at about half a metre of arc whatever the
-   * wall did. So on a berm it is the texture of a billow, and on a four-metre
-   * ramp landing it is a third of four metres swinging up and down every half
-   * metre — features eight times taller than they are wide, which is not a
-   * billow and not even a picket fence, it is a comb. Standing where two of
-   * them happened to peak together, that is a fin, and it is what the last two
-   * critics called tan needles.
-   *
-   * Capping the amplitude in metres was the previous attempt and it is the
-   * wrong half of the ratio to hold: it keeps the aspect honest by making a
-   * four-metre curtain's edge as smooth as glass, which is how the same
-   * curtain came back as a snowdrift. Stretching the wavelength with the
-   * height instead keeps the aspect *and* the detail: a big mass tears in big
-   * pieces, which is both what dust does and what the eye uses to judge how
-   * large the mass is. The berm end, where every proportion here was tuned,
-   * divides by one and does not move. */
-  /* Not the full ratio, though. Stretched one-for-one with the height the crown
-     is exactly the berm's silhouette scaled up, which is correct and reads as
-     four smooth swoops, because only two or three of its features fit in the
-     arc the camera can see — the same glassy rim the amplitude cap produced,
-     arrived at from the other side. The root of the ratio is the compromise
-     that survives both captures: features about twice the berm's aspect on a
-     four-metre wall, which is still a torn mass and not a comb, with two or
-     three tears across every billow instead of a billow every three tears. */
-  float grow = pow(max(max(seg.z, 0.8) / 1.16, 1.0), 0.55);
-  crown += (valueNoise(vec2(ang * max(radius, 0.5) * 2.2 / grow, age * 0.6) + seed * 17.0)
-    - 0.5) * 0.34;
-  /* Squashed toward a floor and a ceiling rather than clipped at them. Left
-     to run, the harmonics occasionally line up into a narrow peak twice the
-     height of the curtain either side of it, and a row of narrow peaks over
-     deep notches is torn card, not dust. But a hard clamp is worse than the
-     peak it removes: wherever the sum overshoots, the crown comes out at
-     exactly the limit across the whole overshoot and the curtain grows a
-     perfectly level plateau, which is the most man-made shape there is. */
-  /* A tall wall is also allowed to come all the way back to the road between
-     its billows, which a short one is not. The floor exists because a berm
-     landing wants a continuous skirt of dust at the tyre line; four metres of
-     continuous anything is a parapet, and what a big impact actually throws
-     is two or three masses with the road showing between them. */
-  float swing = (crown - 0.54) / 0.42;
-  crown = mix(0.54, 0.48, tall)
-    + mix(0.42, 0.47, tall) * swing * inversesqrt(1.0 + swing * swing);
-  /* Punches up, holds, then thins. A shape that visibly grows and then thins
-     is read as gas; one that holds its size while it slides outward is read
-     as a thing being pushed.
-   *
-   * The hold in the middle is new and it is the whole of the duration fix.
-   * The crown used to start falling at a twentieth of the burst's life and be
-   * nine tenths gone by the end of it, which sounds gradual and is not: over
-   * the same stretch the ring is also widening and the camera is closing, so
-   * the three curves multiply and the mass measured 3.2% of the frame at
-   * frame 3 and 0.245% at frame 6 — a four-frame flash, which is under a
-   * tenth of a second and is not long enough for the eye to read anything as
-   * anything. Dust thrown by four tonnes at fifty metres a second does not
-   * arrive and leave inside a tenth of a second; it goes up, stands there,
-   * and comes apart. So: up over the first eighth of the life, standing
-   * through the middle third, and only then thinning. */
-  float rise = mix(0.30, 1.0, smoothstep(0.0, 0.13, age));
-  float fall = 1.0 - smoothstep(0.34, 0.94, age) * 0.86;
-  crown *= rise * fall * (1.0 - smoothstep(0.90, 1.0, age));
-
-  /* Torn from the first frame, and torn on a scale set in metres of arc
-     rather than in radians. A curtain that is solid for a tenth of a second
-     and then starts to open has already been read as a sheet by then; and
-     tearing measured in radians is invisible from close in, where one segment
-     fills the frame and its whole angular span is a few degrees — which is
-     the shot a low chase camera takes on every landing.
-
-     Bitten down from the crown rather than punched through the body. Noise
-     added to the field opens rounded holes in the middle of the curtain,
-     which look like perforations in a sheet: the eye reads the sheet, then
-     the holes in it. Taken off the top instead, the same noise deepens the
-     saddles between billows into notches that run most of the way to the
-     road, which is how a torn dust edge is actually drawn. Two octaves of
-     value noise sum to something clustered hard around a half, so the field
-     is pulled back out to its full swing first. */
-  float arc = ang * max(radius, 0.5);
-  /* On the same stretched clock as the crown's fine term, and for the same
-     reason: a bite is as deep as a fraction of the wall, so its width has to
-     grow with the wall too or the notches sharpen into slots as the curtain
-     gets taller. Two octaves, the finer one for the ragged edge of each tear. */
-  float grain = valueNoise(vec2(arc * 3.4 / grow, age * 0.9) + seed * 7.0) * 0.62
-    + valueNoise(vec2(arc * 7.6 / grow, age * 1.6) + seed * 3.0) * 0.38;
-  /* Barely torn at the instant of contact and increasingly ragged after it.
-     The punch has to arrive as mass — a burst that is already lacy on the
-     frame it appears reads as a wisp rather than as something the car did to
-     the ground — and then come apart, which is the half the eye reads as gas. */
-  /* Deeper bites than the curtain used when it stood half as tall again. All
-     of this shaping is a fraction of the quad's height, so dropping the
-     curtain below a metre shortened every notch in it by the same third and
-     the silhouette flattened into a dune from a low camera — where the near
-     arc is seen almost edge on and is the only part of the ring doing any
-     work. The proportions have to grow when the height shrinks to keep the
-     tearing the same size in metres. */
-  /* The tearing runs on the same stretched clock the crown does. Reaching
-     nine tenths bitten away by six tenths of the life left the last two
-     thirds of the burst as a scatter of slivers with road between them —
-     "tan needles and shards lying on the road", which is a set of objects and
-     the exact failure this file exists to prevent. A mass that is coming
-     apart still has to be a mass while it does it.
-   *
-   * No cap on the depth of a bite. There were two here in turn, at a metre and
-   * a half and then at four, and both were standing in for the wavelength fix
-   * above: with the pitch of a tear now growing with the wall, a deep bite is a
-   * wide tear rather than a slot, and depth is free to be a fraction of the
-   * height like everything else. */
-  float bite = mix(mix(0.16, 0.34, tall), mix(0.74, 0.80, tall),
-    smoothstep(0.05, 0.82, age));
-  return crown * (1.0 - smoothstep(mix(0.28, 0.19, tall), mix(0.70, 0.63, tall), grain) * bite);
-}
-
-float burstSdf(vec2 p, float age, float seed, float kind, vec3 seg) {
-  if (kind > 3.5) {
-    /* Position along the segment turns into a world angle; the crown is
-       sampled there, so the seam between two segments is not a seam. */
-    float ang = burstWallAngle(p, seg);
-    float height = (p.y + 1.0) * 0.5;
-    float top = burstWallTop(ang, seg, age, seed);
-    float d = height - top;
-    /* A sparse few real openings on top of the torn edge, in the thin upper
-       body only, so there is somewhere the road shows through the mass and
-       not only around it. On a tall wall they are neither sparse nor confined
-       to the top: four metres of unbroken anything is a structure.
-     *
-     * Sparser than they were, and this is a consequence of the burst joining
-     * the ink pass. An opening punched through the middle of the curtain is a
-     * closed silhouette of its own, and the pen now draws it: what was a soft
-     * gap in an untraced mass becomes a ring of contour with dust inside and
-     * dust outside, which is the drawn definition of a hole in a sheet. The
-     * comment above the tearing says the same thing about the field version
-     * of this — "the eye reads the sheet, then the holes in it" — and ink
-     * makes it twice as true. Held to a couple of openings per segment and
-     * confined to the thin top, with the tearing at the crown left to do the
-     * work of showing road through the mass. Measured: this and the crown cap
-     * together took the pen's coverage of the plume from a scribble to
-     * something on the order of what the pen spends on the car. */
-    float tall = smoothstep(1.35, 3.60, seg.z);
-    float lift = height / max(top, 0.02);
-    /* Openings on the same stretched pitch the crown's tearing runs on, so a
-       tall curtain is opened by a few large gaps rather than stippled with
-       many small ones. Small openings in a big mass are perforations, and the
-       pen draws each one as a closed contour with dust on both sides of it. */
-    float grow = pow(max(max(seg.z, 0.8) / 1.16, 1.0), 0.55);
-    float holes = valueNoise(
-      vec2(ang * max(seg.y, 0.5) * 2.2 / grow, height * 3.0 - age * 1.1) + seed * 19.0);
-    d += smoothstep(mix(0.66, 0.58, tall), mix(0.84, 0.80, tall), holes)
-      * mix(0.26, 0.34, tall)
-      * smoothstep(mix(0.42, 0.34, tall), 0.98, lift);
-    /* And a torn foot, on the same pitch as the torn crown.
-     *
-     * The ring lifts off the road as it rises, which is deliberate — ground
-     * visible underneath is what says a mass is airborne rather than stained
-     * onto the surface — but it means the bottom of every quad is a boundary of
-     * the drawn shape rather than a join with the tarmac, and the quad's bottom
-     * is dead straight. Before the burst took the pen that was a soft edge
-     * nobody read; with a contour on it, magnified, it is a ruled horizontal
-     * line under a cloud, and a cloud with a ruled line under it is a piece of
-     * card standing on its end. Bitten up from below by a fraction of what the
-     * crown is bitten down by, so the foot is ragged without the curtain ever
-     * losing contact along its whole length. */
-    float base = (valueNoise(vec2(ang * max(seg.y, 0.5) * 1.9 / grow, age * 0.45)
-      + seed * 23.0) - 0.30) * mix(0.05, 0.13, tall);
-    d = max(d, base - height);
-    return d;
-  }
-
-  /* Deliberately off-round. A ring of even width at an even radius painted on
-     tarmac is a road marking, and it stays one however briefly it is there. */
-  float a = atan(p.y, p.x);
-  float lobe = sin(a * 2.0 + seed * 1.3) * 0.115
-             + sin(a * 3.0 + seed) * 0.082
-             + sin(a * 5.0 - seed * 1.6) * 0.050;
-  float r = length(p);
-  /* How much sheet there is to draw, as one number: nothing when the lens has
-     dropped to the road's own level and the annulus has no width on screen,
-     nothing once the burst is over. Both of those used to be separate
-     multipliers on the width, which is where the last defect came from. */
-  float thin = smoothstep(0.10, 0.34, seg.z) * (1.0 - smoothstep(0.58, 0.98, age));
-  float halfWidth = mix(0.130, 0.048, smoothstep(0.0, 0.9, age)) * thin;
-  float d = abs(r - (0.74 + lobe)) - halfWidth;
-  /* Filled only for the first few frames of contact, and never far out. A
-     ground sheet that keeps its middle is a pale mat lying on the road, and a
-     mat is as solid a read as a rock — it just lies down. */
-  d = min(d, r - (0.62 + lobe) * (1.0 - smoothstep(0.0, 0.16, age)) * thin);
-  /* Scalloped, not severed.
-   *
-   * This used to cut right through in two or three places, and the argument for
-   * it was explicitly about ink: an unbroken ring on tarmac reads as a curve
-   * someone drew there, whereas "severed into arcs, the same ink reads as the
-   * edges of torn sheets". The first half of that is true. The second turned
-   * out to be exactly backwards, and the capture that settled it is the sheet
-   * rendered on its own — the arcs do not read as torn sheet, they read as
-   * eight pale plates lying on the road, one contour each, which is the
-   * defect this whole file exists to prevent.
-   *
-   * The premise it rested on is gone in any case: the sheet no longer takes
-   * the pen at all, so there is no ink here for a severed edge to be the edge
-   * of. What is left is deep scalloping, which varies the ring's width without
-   * ever cutting it in two, so at a grazing angle it is one soft band of dust
-   * at the foot of the curtain instead of a scatter of countable objects. The
-   * off-round lobes above are what keeps it from being a road marking.
-   *
-   * Scalloped as a fraction of the band's own width, which is the whole point
-   * and was the bug. "Not severed" was a hand-picked 0.115 against a width of
-   * 0.048 to 0.130, so it held at full width and nowhere else — and the band
-   * spends most of its life away from full width, because both the grazing-angle
-   * fade and the end-of-life fade worked by narrowing it. Narrow the band under
-   * a fixed scallop depth and it is severed after all, into tapered radial
-   * slivers; and a flat radial sliver seen from a lens down at road level does
-   * not project as a sliver lying down, it projects as a stroke standing up.
-   * That is the "tan needles" of the last two reviews, and the fade meant to
-   * remove the sheet at exactly this camera height was manufacturing them. The
-   * chase boom has since been cut from five metres to one and a half, so this
-   * fade is now doing its work on every landing rather than occasionally.
-   *
-   * Below one, the scallop cannot cut through at any width, which makes the
-   * claim in the name of this paragraph true by construction instead of by
-   * arithmetic that happened to work at one size. */
-  float tear = valueNoise(vec2(a * 5.3, 1.7) + seed * 3.0) * 0.66
-             + valueNoise(vec2(a * 11.0, 4.1) - seed * 2.2) * 0.34;
-  d += smoothstep(0.38, 0.82, tear) * halfWidth * 0.88
-    * smoothstep(0.0, 0.30, age);
-  return d;
 }`;
 
 const SHAPE_BODY = /* glsl */`
@@ -904,11 +450,9 @@ const SHAPE_BODY = /* glsl */`
   float streak = streakSdf(p, seed);
   float isChunk = step(0.5, vKind) * (1.0 - step(1.5, vKind));
   float isStreak = step(1.5, vKind) * (1.0 - step(2.5, vKind));
-  /* The ring: the ground sheet and the curtain chords, the two primitives with
-     a shape function of their own. The landing plume's puffs are kind 5 and are
-     dust by every test in this file — same silhouette, same erosion, same
-     painting — so they are counted as dust below and not as burst. */
-  float isBurst = step(2.5, vKind) * (1.0 - step(4.5, vKind));
+  /* The landing plume's puffs are kind 5 and are dust by every test in this
+     file — same silhouette, same erosion, same painting — so they are counted
+     as dust below. */
   float isBurstPuff = step(4.5, vKind);
   float isDust = (1.0 - step(0.5, vKind)) + isBurstPuff;
   float isDriftFiller = step(0.10, vKind) * (1.0 - step(0.35, vKind));
@@ -1021,8 +565,6 @@ const SHAPE_BODY = /* glsl */`
      down and goes, which is what a thrown mass does once the energy that threw
      it has gone, and it leaves nothing lying on the road behind it. */
   distanceToShape += smoothstep(0.46, 0.98, vAge) * 1.25 * isBurstPuff;
-  distanceToShape = mix(
-    distanceToShape, burstSdf(p, vAge, seed, vKind, vSeg), isBurst);
 
   if (distanceToShape > 0.0) discard;`;
 
@@ -1128,13 +670,6 @@ ${SHAPE_BODY}
      would double-print every stroke. */
   body = mix(body, lineColor, rim * (1.0 - isStreak) * (1.0 - isBurstPuff));
 
-  /* The burst is painted on its own terms rather than shaded off an SDF
-     gradient. A dome normal is the right model for a puff and the wrong one
-     for a curtain: it puts a bright centre and a dark edge on every segment,
-     which is precisely the per-segment reading the ring exists to avoid.
-     These two are painted the way a background artist would paint them —
-     the curtain from its foot up, the sheet from its centre out — so the
-     tone follows the whole ring and never an individual quad. */
   /* ── The landing plume is painted as one mass, not as twenty-seven balls ───
    *
    * The dust path shades off the SDF gradient, which is the right model for a
@@ -1155,7 +690,7 @@ ${SHAPE_BODY}
    * next begins, which is the property the twelve chords were built for and the
    * only one of theirs worth keeping. */
   if (isBurstPuff > 0.5) {
-    float fraction = clamp(vSeg.x + p.y * vSeg.z, 0.0, 1.3);
+    float fraction = clamp(vSeg.x + p.y * vSeg.y, 0.0, 1.3);
     float band = max(fwidth(fraction) * 0.9, 0.006);
     /* Dust at the road is looked at through the whole depth of the plume and is
        in the car's own shade; the head of it is a single thickness with the sky
@@ -1224,81 +759,7 @@ ${SHAPE_BODY}
     body = mix(body, mix(road, body, ${BURST_CLAMP_KEEP.toFixed(2)}), spent);
   }
 
-  vec3 burstBody = body;
-  {
-    /* Two rungs, not three. Half a second is not long enough to read a third,
-       and an extra interior break at this scale is a facet, and facets are
-       what stone has. */
-    /* The lit side of the ring, resolved per fragment from where that fragment
-       actually sits on the circle rather than from the flat quad carrying it.
-       Taken off the quad's own normal, the terminator lands on a facet edge
-       and the ring gets a twelve-sided kink in it. */
-    float turn = burstWallAngle(p, vSeg) - vSeg.x;
-    vec3 outward = vKind > 3.5
-      ? normalize(vFace * cos(turn) + vAlong * sin(turn))
-      : normalize(vFace * p.x + vAlong * p.y + vec3(0.0, 0.0, 0.0001));
-    float sunSide = step(0.52, dot(outward, normalize(uSunView)) * 0.5 + 0.5);
-    if (vKind > 3.5) {
-      float height = (p.y + 1.0) * 0.5;
-      float top = burstWallTop(burstWallAngle(p, vSeg), vSeg, vAge, seed);
-      float fraction = clamp(height / max(top, 0.0015), 0.0, 1.0);
-      float band = max(fwidth(fraction) * 0.9, 0.004);
-      /* Painted from the foot up. The dust at the road is looked at through
-         the whole depth of the ring and is in the car's own shade; the crown
-         is a single thickness with the sun behind it. Getting that order
-         right is most of what stops a pale mass reading as a kerb, which is
-         lit the other way round. */
-      vec3 foot = vColor * 0.52;
-      vec3 midway = vColor * mix(0.84, 0.95, sunSide);
-      vec3 crown = min(vColor * mix(1.30, 1.44, sunSide) + vec3(0.04, 0.03, 0.01), vec3(1.0));
-      burstBody = mix(foot, midway, smoothstep(0.26 - band, 0.26 + band, fraction));
-      burstBody = mix(burstBody, crown, smoothstep(0.64 - band, 0.64 + band, fraction));
-      /* And the last of it lighter again. Ending the silhouette on the
-         brightest rung the curtain has is what dissolves the top edge
-         optically while every pixel of it stays opaque — the same trick the
-         plume uses at its rim, and the difference between a mass that stops
-         and a mass that thins out. */
-      burstBody = mix(burstBody, min(crown * 1.10, vec3(1.0)),
-        smoothstep(0.88 - band, 0.88 + band, fraction));
-    } else {
-      float radius = length(p);
-      float band = max(fwidth(radius) * 0.9, 0.004);
-      /* The leading edge of a ground sheet is the part still moving, so it
-         is the part that catches the light. */
-      vec3 trailing = vColor * 0.88;
-      vec3 leading = min(vColor * mix(1.16, 1.30, sunSide), vec3(1.0));
-      burstBody = mix(vColor * 0.78, trailing,
-        smoothstep(0.40 - band, 0.40 + band, radius));
-      burstBody = mix(burstBody, leading,
-        smoothstep(0.72 - band, 0.72 + band, radius));
-    }
-    /* Both thin toward the road's own value as they go, so the burst leaves
-       rather than switches off. */
-    burstBody = mix(burstBody, burstBody * 0.84, smoothstep(0.40, 1.0, vAge));
-    /* And the same rule the plume gets from bulk, which the burst never had:
-       a piece too small on screen to show any interior is also too thin to be
-       bright. At full contrast a distant or early burst is a handful of pale
-       wedges — the tonal range survives when the shape does not, and what is
-       left of a torn curtain three pixels tall is a chip of something. Pulled
-       back toward the ground's own value instead, small pieces stay
-       disturbance. */
-    float burstBulk = smoothstep(0.03, 0.16, vSpread);
-    burstBody = mix(mix(burstBody, vColor * 0.88, 0.55), burstBody, burstBulk);
-    /* No rim drawn here, and this is the other half of invariant 4: one
-       silhouette gets one line, from the pass whose job lines are. The burst
-       writes an inked class into the prepass now (see INK_BURST_CLASS), so
-       the composite finds this shape's torn edges itself, with the stage's
-       own pen — the same weight, the same proportional darkening against
-       whatever it borders, the same distance fade. Painting a second contour
-       here would double-print every stroke, and a doubled line half a pixel
-       off its twin is the heaviest "solid object" cue the style has.
-       It is also why the rim that used to be here never showed up in a
-       measurement: a line drawn in the beauty pass is in the frame whether
-       the ink pass is on or off, so tools/dustjudge.mjs — which measures ink
-       by rendering the same frozen frame both ways — correctly reported the
-       plume as carrying none. */
-  }
-  gl_FragColor = vec4(mix(body, burstBody, isBurst), 1.0);
+  gl_FragColor = vec4(body, 1.0);
 }`;
 
 /* ── Invariant 4, second half: the burst is drawn, so the pen draws it ──────
@@ -1638,23 +1099,10 @@ export class ParticlePool {
          up there, and counting it at its unclamped size put a single puff at
          43% of the frame and drove the estimate to 11.3 on a stage run whose
          real dust never covered more than a few per cent. */
-      const burst = this.kind[i] > 2.5 && this.kind[i] < 4.5;
-      /* Same window as the vertex shader, including its scaling by the
-         instance's own height — see BURST_NEAR_GONE. Left as a constant here
-         while the shader scaled it, the estimate counted a four-metre curtain
-         two metres from the lens at its full unclamped size and reported the
-         pool painting three frames' worth of dust in a frame that in fact
-         held about ten per cent of one. That is the failure the first cut of
-         this governor had, in the one class that had since grown large
-         enough to reproduce it. */
-      const near = burst
-        ? smoothstep(Math.max(sy, 0.35) * BURST_NEAR_GONE,
-          Math.max(sy, 0.35) * BURST_NEAR_FULL, depth)
-        : smoothstep(NEAR_GONE, NEAR_FULL, depth);
+      const near = smoothstep(NEAR_GONE, NEAR_FULL, depth);
       if (near <= 0) continue;
-      const shrink = burst
-        ? near
-        : near * Math.min(1, SCREEN_CAP / Math.max((reach / depth) * this._projY, 1e-4));
+      const shrink =
+        near * Math.min(1, SCREEN_CAP / Math.max((reach / depth) * this._projY, 1e-4));
       /* Half extents in normalised device coordinates, which span 2 across the
          frame. Billboards spin in the image plane, so the larger extent is
          taken on both axes rather than pretending a rotation cannot happen. */

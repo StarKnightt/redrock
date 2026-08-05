@@ -83,7 +83,7 @@ for (const h of big) {
   console.log(`      closes at:   ${h.closes ? `${h.closes.kind} s=${h.closes.s} side ${h.closes.side}`
     + ` seen ${h.closes.seen}/5, ${h.closes.n} figures (first legible at s=${h.afterS})` : '(lap end)'}`);
 }
-if (!big.length) { console.log('    none'); finish(0); }
+if (!big.length) { console.log('    none'); finish(process.exitCode || 0); }
 
 const worst = big[0];
 const probeS = [];

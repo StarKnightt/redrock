@@ -399,4 +399,5 @@ if (errs.length) {
   [...new Set(errs)].forEach(e => console.log(' ', e));
 }
 console.log(`\n  → shots/countdown`);
-finish(dirty || shellBad || errs.length ? 1 : 0);
+if (dirty || shellBad || errs.length) process.exitCode = 1;
+finish(process.exitCode || 0);

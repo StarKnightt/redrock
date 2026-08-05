@@ -105,4 +105,5 @@ if (errs.length) {
   [...new Set(errs)].forEach(e => console.log(' ', e));
 }
 console.log(`  → shots/hud`);
-finish(errs.length ? 1 : 0);
+if (errs.length) process.exitCode = 1;
+finish(process.exitCode || 0);

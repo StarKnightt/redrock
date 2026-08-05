@@ -90,3 +90,25 @@ if (drawn) {
   }
 }
 for (const o of odd) console.log(`  ! ${o}`);
+
+/* THE CEILING. 260,000 triangles, the same number tools/zyrunoff.mjs:512
+   enforces per seed, expressed the same way (over → ✗ OVER, exit 1). The
+   count gated is this tool's own scene walk of the FULL RUNNING SCENE at
+   manual&tier=high&seed=N&cap=0&hud=0 — stage with run-off, player, rival
+   shells and fx included — which is the scene zyrunoff's "with run-off"
+   column walks with the same arithmetic. It is deliberately NOT boot's
+   baseline count (~247k on seed 22) or shell's with-field count (~256k):
+   those are smaller scenes, not disagreeing instruments, and gating one of
+   them here would pass a build that zyrunoff then fails.
+   An empty walk must fail loud: a scene that never built reads zero
+   triangles, and zero is under any ceiling. */
+const CEILING = 260_000;
+if (!(total > 0)) {
+  console.log('\n  ✗ the walk found NO triangles — the scene never built or the walk is broken.');
+  process.exitCode = 1;
+} else if (total > CEILING) {
+  console.log(`\n  ✗ OVER the ${CEILING.toLocaleString()} ceiling by ${Math.round(total - CEILING)} triangles.`);
+  process.exitCode = 1;
+} else {
+  console.log(`\n  ✓ under the ${CEILING.toLocaleString()} ceiling — ${Math.round(CEILING - total)} spare.`);
+}

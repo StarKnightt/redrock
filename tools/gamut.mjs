@@ -147,7 +147,7 @@ if (process.argv.includes('--scan')) {
     console.log(`  y=${(yf * 100).toFixed(0)}%  ${big.length} runs >=8px:  ` +
       big.map(r => `${r.v}x${r.n}`).join('  '));
   }
-  finish(0);
+  finish(process.exitCode || 0);
 }
 
 if (process.argv.includes('--frames')) {
@@ -161,7 +161,7 @@ if (process.argv.includes('--frames')) {
                 ` ${String(s.meanChroma).padStart(7)} ${String(s.hueBins).padStart(8)}`);
     console.log(`    deciles ${s.deciles.join(' ')}`);
   }
-  finish(0);
+  finish(process.exitCode || 0);
 }
 const tag = process.argv[2] && !process.argv[2].startsWith('--') ? process.argv[2] : 'gamut';
 const outDir = path.join(ROOT, 'shots', tag);

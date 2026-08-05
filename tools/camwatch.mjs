@@ -139,7 +139,15 @@ await run({ width: 960, height: 540, hash: 'manual&tier=high&seed=22&cap=0&hud=0
         behind: fh.length > 1 ? { d: +fh[1].distance.toFixed(1), name: hitName(fh[1]) } : null,
       });
     }
-    return { tape: tape.length, stations, targets: targets.length, mode };
+    return {
+      tape: tape.length, stations, targets: targets.length, mode,
+      /* Whether the lap actually covered the stage. The sampling loop has a
+         guard counter, and a stalled autopilot exhausts it silently — the 400
+         stations would then all come from the fraction that was driven while
+         claiming the whole lap. Drive mode places each station explicitly, so
+         it covers its range by construction. */
+      lapDone: mode !== 'lap' || p.s >= L - 45,
+    };
   }, [N, FROM, TO, MODE]);
 
   const st = out.stations;
@@ -187,6 +195,33 @@ await run({ width: 960, height: 540, hash: 'manual&tier=high&seed=22&cap=0&hud=0
   fs.mkdirSync(path.join(ROOT, 'shots', TAG), { recursive: true });
   fs.writeFileSync(path.join(ROOT, 'shots', TAG, 'stations.json'), JSON.stringify(out, null, 1));
   console.log(`\n  → shots/${TAG}/stations.json`);
+
+  /* Gates. The healthy tree measures 0 of 400 stations buried and 0 of 400
+     voids, with the offender table literally `none` — so a single station with
+     the lens past a surface, or a frame centre under 1.2 m, is a regression
+     and fails the run. The terrain-hides-road count is NOT gated: the healthy
+     tree reads 59 of those, they are informational.
+     Degenerate inputs fail LOUD rather than pass silently — a collapsed target
+     list or a lap that never covered the stage would otherwise certify
+     scenery this run never tested (healthy readings: 96 ray targets, lap
+     driven to the last 45 m).
+     Known limitation, unchanged: the crowd is instanced in the vertex shader
+     and invisible to the raycaster, so 0 buried certifies rails and terrain
+     only. */
+  const problems = [];
+  if (!st.length) problems.push('zero stations sampled — nothing was certified');
+  if (out.targets < 10) problems.push(`only ${out.targets} ray targets survived the scene walk`
+    + ' (healthy is 96) — this run tested almost nothing');
+  if (!out.lapDone) problems.push('the autopilot lap never reached the end of the stage'
+    + ' — the stations cover only the part that was driven');
+  if (buried.length) problems.push(`${buried.length} of ${st.length} stations have the lens`
+    + ' behind scenery (healthy is 0)');
+  if (voids.length) problems.push(`${voids.length} of ${st.length} stations have the frame centre`
+    + ' under 1.2 m (healthy is 0)');
+  console.log('');
+  for (const why of problems) console.log(`  ✗ ${why}`);
+  if (problems.length) process.exitCode = 1;
+  else console.log('  ✓ lens clear of scenery and frame centre judgeable at every station');
 });
 
 finish(process.exitCode || 0);

@@ -132,6 +132,42 @@ await run({ width: 480, height: 270, hash: 'manual' }, async ({ page }) => {
   console.log(`    ${lap.impacts} impacts, ${lap.offRoadPct}% off road, ${lap.sidewaysPct}% sideways`);
   console.log(`    longest without progress: ${lap.longestStuckSec}s, ${lap.recoveries} recoveries`);
   console.log(`    decile splits: ${lap.splits.join('  ')}`);
+
+  /* Gates. Every bar below is derived from measurement, not taste — the
+     readings and the arithmetic are in .fix/FINDINGS-teeth.md. Healthy today:
+     FINISHED in 190.9 s / 17 impacts / 9% off road / stuck 0.9 s; legitimate
+     tunings the same day read 196.1 s / 37 / 20% and 233.4 s / 23 / 13%, so
+     lap time and impacts move a lot across good changes and the bars are set
+     with headroom over the WORST legitimate reading, not the current one.
+     Repeat runs are byte-identical (four consecutive runs, measured), so no
+     noise margin is needed on top.
+     Impact count is gated extra loosely on purpose: a recorded warning shows
+     it is chaotic across adjacent tuning values (24 / 71 / 52) even though
+     each run is deterministic.
+     NOT gated: the handbrake catch. The current healthy tree already reads
+     NEVER CAUGHT (spun) on that standalone test, so a gate there would fire
+     on day one — reported as a finding instead. */
+  const gates = [
+    [!lap.finished, `the lap DID NOT FINISH — reached ${lap.reached}%`],
+    [lap.time > 300,
+      `lap time ${lap.time}s is over the 300 s bar (legitimate range measured 190.9–233.4 s)`],
+    [lap.impacts > 150,
+      `${lap.impacts} impacts is over the 150 bar (worst chaotic-but-legitimate reading was 71)`],
+    [lap.offRoadPct > 40,
+      `${lap.offRoadPct}% off road is over the 40% bar (worst legitimate reading was 20%)`],
+    [lap.longestStuckSec > 10,
+      `stuck ${lap.longestStuckSec}s without progress, over the 10 s bar (healthy reads 0.9 s`
+      + ` and the race recovers a stranded car after 2.5 s)`],
+    [tests.accel.t100 === null,
+      `the car never reached 100 km/h in 20 s of full throttle (healthy reads 3.91 s)`],
+    [tests.brake100to0_m > 120,
+      `braking 100-0 took ${tests.brake100to0_m} m, over the 120 m bar (~3x the healthy 41 m)`],
+  ];
+  const failed = gates.filter(([hit]) => hit);
+  console.log('');
+  for (const [, why] of failed) console.log(`  ✗ ${why}`);
+  if (failed.length) process.exitCode = 1;
+  else console.log('  ✓ lap finished and every gated quantity is inside its bar');
 });
 
 finish(process.exitCode || 0);

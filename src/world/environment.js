@@ -2896,6 +2896,138 @@ function slotOutside(minU, want, cap) {
   return u > 0.97 ? null : u;
 }
 
+/* The other half of the clearance rule: the road this object is not standing
+ * beside.
+ *
+ * `clearOfRoad` and `slotOutside` above are both correct and both blind in the
+ * same way — they know one station. A rank picks a station, asks that station's
+ * profile how much shoulder there is, and places inside it. Nothing in that
+ * conversation can see that the course comes back past this spot at a completely
+ * different arc length, and on a switchback it does: the road is a shelf cut into
+ * a mountainside, so consecutive legs stack a few metres apart vertically and a
+ * few metres apart horizontally while being hundreds of metres apart along the
+ * road.
+ *
+ * Measured on seed 1, every one of the eleven trees the verge audit found inside
+ * the driving corridor had been placed legally. Each was put down against a frame
+ * 245 to 686 m away in arc length, with 4.3 to 15.4 m of room reported at that
+ * frame — genuine shoulder, correctly measured. `ridge-trees-1[1227]`, the one
+ * standing on the tarmac at s=2202, was placed against s=1836 with 4.30 m of
+ * room. The rule was not too loose and it was not mis-tuned; it answered the
+ * question it was asked, and the question was local.
+ *
+ * So ask it of the whole course. An object is in the way if its footprint crosses
+ * the road slab at ANY station, and the slab is the driving surface plus a margin
+ * out to the side and a band above and below — a plant on a ledge above the road
+ * is a canopy and one well below the lip is on the cliff, and neither is an
+ * obstruction.
+ *
+ * The slab is deliberately the SAME size as the one tools/verge.mjs audits with,
+ * plus two centimetres so the two cannot disagree on a boundary case. It is not
+ * generously wider, and that restraint is deliberate: `pushRidge` shrinks verge
+ * scrub to fit the room it has using a factor calibrated against exactly the
+ * audit's 0.35 m, so a plant allowed to stand on the berm lands with 0.41 to
+ * 0.45 m of clearance. A keepout at 0.5 m would condemn the whole berm rank. A
+ * clearance rule that is too strict does not fail quietly in this file, it strips
+ * the scenery — so this matches the audit's predicate rather than trying to beat
+ * it.
+ *
+ * What this is NOT for: barriers, markers, signs, kerbs and crowd furniture, all
+ * of which belong at the road edge on purpose. It is for the natural scenery that
+ * has no business on the tarmac at any station — rock and vegetation.
+ */
+const SLAB_OUT_SMALL = 0.37, SLAB_OUT_LARGE = 2.62, SLAB_BIG_R = 1.2;
+const SLAB_ABOVE = 3.52, SLAB_BELOW = 2.52;
+const SLAB_ALONG = 2;
+const SLAB_CELL = 32;
+
+let _slabIndex = null;
+
+/** Frames bucketed by position, so "which road is near this point" is O(1). */
+function roadSlabIndex(track) {
+  if (_slabIndex && _slabIndex.track === track) return _slabIndex;
+  const cells = new Map();
+  for (let n = 0; n < track.frames.length; n++) {
+    const p = track.frames[n].pos;
+    const k = `${Math.floor(p.x / SLAB_CELL)},${Math.floor(p.z / SLAB_CELL)}`;
+    const a = cells.get(k);
+    if (a) a.push(n); else cells.set(k, [n]);
+  }
+  _slabIndex = { track, cells };
+  return _slabIndex;
+}
+
+/**
+ * Does this object's footprint cross the driving surface at any station?
+ *
+ * The 3x3 cell block around the point is searched. A cell is 32 m and the widest
+ * this test ever reaches is half a road plus the large margin plus the object's
+ * own radius — comfortably inside 32 m — so the block cannot miss a frame.
+ */
+function onRoadSlab(track, position, radius, height) {
+  const { cells } = roadSlabIndex(track);
+  const ci = Math.floor(position.x / SLAB_CELL), cj = Math.floor(position.z / SLAB_CELL);
+  const out = radius > SLAB_BIG_R ? SLAB_OUT_LARGE : SLAB_OUT_SMALL;
+  for (let di = -1; di <= 1; di++) {
+    for (let dj = -1; dj <= 1; dj++) {
+      const bucket = cells.get(`${ci + di},${cj + dj}`);
+      if (!bucket) continue;
+      for (const n of bucket) {
+        const f = track.frames[n];
+        const dx = position.x - f.pos.x, dz = position.z - f.pos.z;
+        /* Inside this frame's own slice of road, not merely lined up with it.
+           A frame is a cross-section three metres long, and skipping this test
+           was the first version's mistake: on a bend the tangent has swung round
+           by the time you are thirty metres along the arc, so a plant sitting
+           quietly on the shoulder beside one frame reads as nearly on the
+           centreline of another that it is in fact thirty metres in front of.
+           That dropped 1600 placements a seed — 19% of the scenery, and the berm
+           with it — with 1286 of them charged against frames 12 to 60 m away and
+           not one against its own stretch. Half a STEP either side with overlap
+           keeps consecutive frames tiling the road continuously. */
+        const along = dx * f.flatRight.z - dz * f.flatRight.x;
+        if (Math.abs(along) > SLAB_ALONG) continue;
+        const lateral = Math.abs(dx * f.flatRight.x + dz * f.flatRight.z);
+        if (lateral - radius >= f.width * 0.5 + out) continue;
+        const dy = position.y - f.pos.y;
+        if (dy > SLAB_ABOVE) continue;          // a canopy over the road
+        if (dy + height < -SLAB_BELOW) continue; // wholly below the lip
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Drop the placements that stand on some other leg of the road.
+ *
+ * Radius and height come from the unit geometry's own bounding box times each
+ * item's scale, which is how tools/verge.mjs measures the same instances — so
+ * what is tested here is what the audit will test, not an approximation of it.
+ *
+ * Dropping rather than shrinking. `pushRidge` shrinks a plant to fit its own
+ * verge and that is right there, because the plant belongs on that verge and only
+ * its size is in question. Here the position itself is wrong: the object is on a
+ * road, and there is no size at which standing on the road is correct. The counts
+ * are tiny — around ten placements per seed out of eighteen thousand — so this is
+ * removing intruders, not thinning cover.
+ */
+function clearOfCourse(track, geometry, items) {
+  geometry.computeBoundingBox();
+  const bb = geometry.boundingBox;
+  const rUnit = Math.max(
+    Math.abs(bb.max.x), Math.abs(bb.min.x), Math.abs(bb.max.z), Math.abs(bb.min.z),
+  );
+  const hUnit = bb.max.y;
+  return items.filter(it => !onRoadSlab(
+    track,
+    it.position,
+    rUnit * Math.max(Math.abs(it.scale.x), Math.abs(it.scale.z)),
+    hUnit * Math.abs(it.scale.y),
+  ));
+}
+
 /**
  * A twelve-triangle boulder: two pyramids joined at an irregular hexagon.
  *
@@ -3063,7 +3195,10 @@ function buildRocks(field, seed, material) {
   const group = new THREE.Group();
   group.name = 'boulders';
   for (let i = 0; i < geometries.length; i++) {
-    group.add(makeInstances(geometries[i], material, items[i], `boulders-${i}`));
+    group.add(makeInstances(
+      geometries[i], material,
+      clearOfCourse(field.track, geometries[i], items[i]), `boulders-${i}`,
+    ));
   }
   return group;
 }
@@ -3927,15 +4062,23 @@ function buildVegetation(field, seed, brushMaterial, treeMaterial, ridgeMaterial
 
   const group = new THREE.Group();
   group.name = 'coastal-plants';
+  /* Every rank above placed against one station's shoulder. This is where the
+     whole course gets a say — see clearOfCourse. */
+  const track = field.track;
   for (let i = 0; i < 2; i++) {
-    group.add(makeInstances(buildShrubGeometry(i), brushMaterial, brushItems[i], `leafy-shrubs-${i}`, false));
+    const geo = buildShrubGeometry(i);
+    group.add(makeInstances(geo, brushMaterial,
+      clearOfCourse(track, geo, brushItems[i]), `leafy-shrubs-${i}`, false));
   }
   for (let i = 0; i < 3; i++) {
-    group.add(makeInstances(buildTreeGeometry(i), treeMaterial, treeItems[i], `coastal-trees-${i}`, true));
+    const geo = buildTreeGeometry(i);
+    group.add(makeInstances(geo, treeMaterial,
+      clearOfCourse(track, geo, treeItems[i]), `coastal-trees-${i}`, true));
   }
   for (let i = 0; i < 2; i++) {
+    const geo = buildRidgeTreeGeometry(i);
     group.add(makeInstances(
-      buildRidgeTreeGeometry(i), ridgeMaterial, ridgeItems[i], `ridge-trees-${i}`, false,
+      geo, ridgeMaterial, clearOfCourse(track, geo, ridgeItems[i]), `ridge-trees-${i}`, false,
     ));
   }
   return group;

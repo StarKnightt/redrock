@@ -41,13 +41,37 @@ await run({ width: 1920, height: 1080, hash: `manual&tier=high&seed=${SEED}&cap=
        * composite's quad: one triangle, one call, on every seed and every
        * station. That is why the reset is held off below.
        *
-       * But the accumulated figure is then the sum over ALL the passes, and
-       * it runs at almost exactly 3x the scene — measured 738,315 against a
-       * 246,514 scene on seed 22. It is the GPU's real workload and it is
-       * worth having, but it is NOT the stage's triangle count, and the
-       * ~736k figure this tool used to print under a bare "triangles"
-       * heading has been read as a budget breach at least once. Both are
-       * printed, each under its own name. */
+       * But the accumulated figure is then the sum over ALL the passes. It is
+       * the GPU's real workload and it is worth having, but it is NOT the
+       * stage's triangle count, and the ~736k figure this tool used to print
+       * under a bare "triangles" heading has been read as a budget breach at
+       * least once. Both are printed, each under its own name.
+       *
+       * ── WHAT THE EXCESS ACTUALLY IS, because this note used to get it wrong
+       *
+       * The list above — normals prepass, opt-in prepass, beauty pass, quad —
+       * accounts for about 2x the scene plus one triangle, not the 3x that was
+       * being measured. The missing third was THE SUN'S SHADOW PASS, and it
+       * was in there twice: three runs its shadow pass at the top of every
+       * renderer.render(), and the pipeline made two of them over a lit scene.
+       * Measured directly (tools/shcost.mjs, seed 22, open station): 255,471
+       * beauty + ~255,471 normals + 263,830 shadow + 1 quad = 774,761, which
+       * is the 3.03x this tool reported.
+       *
+       * The shadow pass is invisible to every other triangle report in the
+       * tree for one reason: three calls info.reset() AFTER the shadow pass
+       * (three.module.js:30081 then 30087), so any tool leaving info.autoReset
+       * at its default cannot see it. This tool holds the reset off and so is
+       * the only place it shows up — as an unexplained third of the workload.
+       *
+       * ── THE FIGURE HAS MOVED, AND DOWNWARDS IS CORRECT
+       *
+       * src/render/outline.js now builds the map once per frame instead of
+       * twice. That removes one shadow pass from this column and nothing else.
+       * Measured at 1920x1080, seed 22, mid-bore: 746,057 -> 621,570 all-pass
+       * triangles and 273 -> 211 calls, i.e. 124,487 triangles and 62 calls
+       * gone, while "scene tri" holds at 248,547 exactly. Ratio 3.00x -> 2.50x.
+       * A DROP HERE IS THE SAVING, NOT A REGRESSION. */
       g.renderOnce();
       const scene = { ...g.pipeline.stats };   // beauty pass alone
       g.renderer.info.autoReset = false;
@@ -85,8 +109,14 @@ await run({ width: 1920, height: 1080, hash: `manual&tier=high&seed=${SEED}&cap=
   const worst = out.rows.reduce((a, b) => (b.sceneTris > a.sceneTris ? b : a), out.rows[0]);
   console.log(`\n  "scene tri" is what the stage costs — the beauty pass, snapshotted by the`
     + `\n  pipeline before the composite resets renderer.info. Compare budgets against it.`
-    + `\n  "all-pass tri" is that plus the normals prepass, the opt-in prepass and the`
-    + `\n  composite quad: about ${(worst.tris / Math.max(1, worst.sceneTris)).toFixed(1)}x`
-    + ` the scene here. It is the GPU's workload, not a budget.\n`);
+    + `\n  "all-pass tri" is that plus the normals prepass, the opt-in prepass, THE`
+    + `\n  SUN'S SHADOW PASS and the composite quad:`
+    + ` ${(worst.tris / Math.max(1, worst.sceneTris)).toFixed(2)}x the scene here.`
+    + `\n  It is the GPU's workload, not a budget. The shadow pass is the reason this`
+    + `\n  is not simply 2x, and it is invisible to every other triangle report in the`
+    + `\n  tree because three resets renderer.info AFTER it; this tool holds the reset`
+    + `\n  off. It used to be counted TWICE (2.9-3.0x) because the pipeline built the`
+    + `\n  map once per scene pass; it now builds it once per frame, so this column`
+    + `\n  dropped by ~124,500 triangles and ~62 calls. THAT DROP IS THE SAVING.\n`);
 });
 finish(process.exitCode || 0);

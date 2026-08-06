@@ -1011,6 +1011,46 @@ export class CelPipeline {
       return;
     }
 
+    /* ONE SHADOW MAP PER FRAME, not one per scene pass.
+     *
+     * three runs its shadow pass at the top of every renderer.render()
+     * (three.module.js:30081), and this method makes two of them over a scene
+     * that has lights — the normals prepass below and the beauty pass after
+     * it. So the single most expensive term in the frame was being paid twice
+     * to produce one picture. Measured (tools/shcost.mjs, paired differences
+     * against the same frame with the pass held): at the 8192 that shipped for
+     * months the two passes together cost 3.35-4.05 ms of a 4.9-6.7 ms frame on
+     * a 4060, and at the 4096 that replaced it they cost 0.65-1.00 ms. Halving
+     * that is the largest single saving available in the renderer, and it costs
+     * the picture nothing.
+     *
+     * Set immediately before the BEAUTY pass rather than at the top of this
+     * method, and that placement is the whole no-op argument. shadow matrices
+     * are only recomputed inside the shadow pass (three.module.js:22484), and
+     * setupLights reads them straight afterwards, so today the map that
+     * actually reaches the frame is the SECOND one, built at exactly this
+     * point. Triggering the single pass here reproduces that same map at that
+     * same moment. Triggering it before the normals prepass would instead keep
+     * the first one — almost certainly identical, but "almost" is not what a
+     * pixel-parity claim is allowed to rest on.
+     *
+     * Saved and restored rather than set once at construction, exactly as
+     * autoClear is in _renderPrepassOptIns below. A global autoUpdate = false
+     * would also change what tools/fx.mjs and tools/inkprobe.mjs see, since
+     * both call renderer.render() directly and would then draw against
+     * whatever map this method last left. Confining it to this method makes
+     * every renderer.render() outside the pipeline behave exactly as before.
+     *
+     * The quad pass cannot swallow the flag: three clears needsUpdate at
+     * three.module.js:22506, AFTER its `lights.length === 0` early return at
+     * 22386, so a lightless scene leaves a pending update pending.
+     *
+     * Verified a pixel no-op at five stations by tools/shparity.mjs, which
+     * also confirms the shadow map's own bytes do not depend on the wall clock
+     * — the one route by which the two passes could ever have differed. */
+    const shadowAuto = r.shadowMap.autoUpdate;
+    r.shadowMap.autoUpdate = false;
+
     this.quadMat.uniforms.uFar.value = this.camera.far;
     this.quadMat.uniforms.uInkEnabled.value = this.inkEnabled ? 1 : 0;
     this.quadMat.uniforms.uGradeAmount.value = this.gradeEnabled ? 1 : 0;
@@ -1046,6 +1086,7 @@ export class CelPipeline {
       this.scene.fog = fog;
     }
 
+    r.shadowMap.needsUpdate = true;
     r.setRenderTarget(this.color);
     r.clear();
     r.render(this.scene, this.camera);
@@ -1058,6 +1099,7 @@ export class CelPipeline {
 
     r.setRenderTarget(null);
     r.render(this.quadScene, this.quadCam);
+    r.shadowMap.autoUpdate = shadowAuto;
   }
 
   dispose() {

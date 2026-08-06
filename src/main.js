@@ -60,10 +60,65 @@ const FILL_OFFSET = new THREE.Vector3(150, 56, -165);
    that crosses it at a very shallow angle, and a shallow edge is the case
    where a texel staircase is most visible — the boundary runs nearly along
    the grid instead of across it. Verified by elimination: dropping normalBias
-   back to 0.018 changed nothing, doubling the map halved the tread. Measured
-   at 0.15 ms a frame on the 4060 against a 16.6 ms budget. Low and medium are
-   left alone deliberately; they exist for hardware that cannot afford this,
-   and the staircase is the right thing for them to trade away. */
+   back to 0.018 changed nothing, doubling the map halved the tread.
+
+   ── HIGH IS 4096, AND THE 8192 IT REPLACES WAS COSTED WITH A BLIND TIMER ──
+
+   This comment used to end "Measured at 0.15 ms a frame on the 4060 against a
+   16.6 ms budget." That figure was wrong by a factor of about twenty-five, and
+   because it made 8192 look free it is the reason 8192 shipped as the default
+   for every player. It is recorded here so the mistake cannot be made again.
+
+   WHY IT WAS WRONG. A stopwatch around renderer.render() measures how long it
+   took to QUEUE the work, not to do it. Chrome puts the real GL in another
+   process behind a command buffer, and — baked off in .fix/mobdiag.mjs —
+   gl.flush(), gl.fenceSync + gl.clientWaitSync with the driver's own maximum
+   timeout, and gl.finish() ALL fail to block on it. Every one of them reports
+   the same plausible milliseconds for a fullscreen pass over sixteen times the
+   pixels, which is the one thing a fill-bound pass cannot honestly do. Only a
+   one-pixel readPixels forces the bytes to exist in JavaScript and therefore
+   forces the work to have happened. Arithmetic alone should have caught it:
+   8192 squared is 67 Mpixel of depth rasterisation, so 0.15 ms would be
+   450 Gpixel/s and a 4060 has nothing like that.
+
+   WHAT IT ACTUALLY COSTS (tools/shcost.mjs: one-pixel readPixels drain,
+   calibrated against pixel area, batches grown past the clock's 100 us
+   quantisation, and PAIRED interleaved differences so drift cancels — an
+   unpaired sweep reported negative costs and had to be thrown away). Whole
+   frame at 1600x900 on a 4060, across three stations, with the map rendered
+   ONCE per frame as it now is:
+
+     map    per frame     frame total    texel on road    colour+depth
+     1536   0.04-0.10     1.0-1.4 ms         12.25 cm         11.3 MB
+     2048   0.10-0.18     1.1-1.4 ms          9.19 cm         20.0 MB
+     4096   0.30-0.47     1.4-1.9 ms          4.59 cm         80.0 MB
+     8192   1.67-2.38     3.0-4.5 ms          2.30 cm        320.0 MB
+
+   The knee is between 2048 and 4096: 8192 costs five times 4096 for half a
+   texel, and three quarters of the whole GPU frame went on it.
+
+   WHY NOT KEEP 8192 NOW THAT IT IS ONLY RENDERED ONCE. Because it is still
+   1.7-2.2 ms — over half the frame — and still a 320 MB allocation, on by
+   default on every device including phones, which mostly report a
+   MAX_TEXTURE_SIZE of 8192 or 16384 and therefore grant the request rather
+   than clamping it away.
+
+   WHY 4096 AND NOT LESS, which is the half of the argument above that still
+   stands. Measured against 8192 (tools/shqual.mjs), inside the shadow's own
+   footprint rather than frame-wide, at the coastal cliff this note was written
+   about: 4096 disturbs 1.8% of shadowed pixels, 2048 disturbs 4.5% and 1536
+   disturbs 6.2%. And in MOTION, which is what actually decides it — car,
+   camera and clock frozen, the shadow frustum nudged 5 cm along the road, so
+   every changed pixel is the edge crawling and nothing else — 8192 flickers
+   1.3% of the shadow, 4096 2.9%, 2048 6.3% and 1536 8.4%. A crawling shadow
+   edge is worse here than a slow frame: this look has banded flat colour and
+   thick ink, and it has nowhere to hide a shimmering boundary.
+
+   4096 holds 4.59 cm of texel on the road against medium's 7.59 cm, so high
+   is still meaningfully high on the axis this comment has always argued on.
+   Low and medium are left alone deliberately; they exist for hardware that
+   cannot afford this, and the staircase is the right thing for them to trade
+   away. */
 /* The simulation's own clock. Fixed, and the only thing allowed to advance
    the car. Eight substeps is 67 ms of catch-up per frame, comfortably past the
    50 ms the frame time is already clamped to. */
@@ -107,7 +162,7 @@ const RAMP_FX_SCALE = 3.6;
 const TIERS = {
   low: { dpr: 0.75, shadow: 1536, shadowDist: 30 },
   medium: { dpr: 1.0, shadow: 2048, shadowDist: 38 },
-  high: { dpr: 1.0, shadow: 8192, shadowDist: 46 },
+  high: { dpr: 1.0, shadow: 4096, shadowDist: 46 },
 };
 
 /* The held finish shot.
@@ -644,10 +699,12 @@ class Game {
     this.sun.position.copy(SUN_OFFSET);
     this.sun.castShadow = true;
     const sm = TIERS[this.tier];
-    /* Clamped, because the high tier now asks for 8192 and that is above the
-       floor WebGL2 guarantees. Silently dropping to what the driver can give
-       costs a little edge quality; asking for more than it can give fails the
-       whole shadow map. */
+    /* Clamped, because the high tier asks for 4096 and WebGL2 only guarantees
+       2048. Silently dropping to what the driver can give costs a little edge
+       quality; asking for more than it can give fails the whole shadow map.
+       Kept after high came down from 8192: 4096 is very widely available but
+       it is still above the floor, and three's own clamp
+       (three.module.js:22429) would otherwise be the only thing catching it. */
     const shadowSize = Math.min(sm.shadow, this.renderer.capabilities.maxTextureSize);
     this.sun.shadow.mapSize.set(shadowSize, shadowSize);
     const cam = this.sun.shadow.camera;

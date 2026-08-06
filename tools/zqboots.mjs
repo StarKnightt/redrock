@@ -14,14 +14,47 @@
  * on a green bank.
  *
  * So ask the question the defect is written in. Under the boots there are
- * only three things it can be:
+ * two things it can be:
  *
  *   sea      the ocean mesh, found by ablation — hide the water and see
  *            which pixels change. This is the defect: a figure over water.
- *   sky      no geometry at all, read off the prepass depth target. Equally
- *            the defect, and the one a cliff lip actually produces.
  *   ground   anything else — landform, road, berm, verge, near or far. A
  *            figure standing against ground reads as standing on it.
+ *
+ * THE SKY CHANNEL IS RETIRED. It used to be a third answer here — "no geometry
+ * at all, read off the prepass depth target" — classified by
+ *
+ *     !isFinite(dep) || dep <= 0 || dep > 4000
+ *
+ * That condition cannot be true. Both of its thresholds sit outside the range of
+ * the value they test, which makes it the same shape as a check that cannot fail:
+ * it looked like coverage of the cliff-lip case and provided none. Measured over
+ * seeds 22, 1 and 40, sampling three rows under every judged figure's boots and
+ * one row forty pixels above its head as a positive control for open sky:
+ *
+ *   under boots   2430 samples, all finite, 11.83 .. 583.42 m
+ *   open sky       810 samples, all finite, 16.75 .. 3649.19 m
+ *   dep <= 0            0 of 3240
+ *   dep > 4000          0 of 3240
+ *
+ * The premise is what is wrong, not the constant. The branch tests for "nothing
+ * was written here", but the sky is DRAWN — `sky-dome` is real geometry — so the
+ * prepass writes a finite positive depth at every pixel and there is no such
+ * thing as an unwritten one.
+ *
+ * Nor can it be rescued by re-calibrating 4000 down, which was the obvious
+ * repair and is why the range above was measured on more than one seed. Far
+ * ground and sky share a band: legitimate ground under a figure's boots reaches
+ * 583 m on seed 40 — the headland rings put painted terrain 1.5 km out — while
+ * open sky reads as little as 2765 m on seed 1. Any single constant either misses
+ * the sky it is for or calls a distant hillside sky, and the boundary moves per
+ * seed. Separating them honestly would need the same ablation the sea test uses,
+ * hiding the dome and seeing which pixels move — a redesign, not a threshold.
+ *
+ * Retired rather than repaired because `sea` already answers the defect this file
+ * is named for, and a dead branch that looks like coverage is worse than an
+ * absent one. `floating` is unchanged in behaviour: it was `(sea + sky) > half`
+ * with `sky` provably always 0, so dropping the term cannot move a verdict.
  *
  * Same discipline as the rest: performance.now() pinned across every render
  * in a station, frame 0 discarded, 1600x900 through g.pipeline.render(), the
@@ -89,22 +122,6 @@ for (const SEED of SEEDS) {
         return n ? { n, x0, y0, x1, y1, w: x1 - x0 + 1, h: y1 - y0 + 1 } : null;
       };
 
-      /* Depth, for the sky test only. render/outline.js keeps linear view
-         depth in the alpha of its float normals target. Sky is where nothing
-         was written. */
-      const depthTarget = g.pipeline.normals;
-      const readDepth = (xs, y) => {
-        if (!depthTarget) return xs.map(() => NaN);
-        const out = [];
-        const buf = new Float32Array(4);
-        for (const x of xs) {
-          if (x < 0 || x >= W || y < 0 || y >= H) { out.push(NaN); continue; }
-          g.renderer.readRenderTargetPixels(depthTarget, x, H - 1 - y, 1, 1, buf);
-          out.push(buf[3]);
-        }
-        return out;
-      };
-
       g.autopilot(true, 0.85);
       const rows = [];
 
@@ -160,27 +177,22 @@ for (const SEED of SEEDS) {
                black that belongs to the figure, not to what it stands on. */
             const xs = [];
             for (let q = -2; q <= 2; q++) xs.push(Math.round(bb.x0 + bb.w * (0.5 + q * 0.12)));
-            let sea = 0, sky = 0, ground = 0;
+            let sea = 0, ground = 0;
             for (const dy of [3, 5, 8]) {
               const y = bb.y1 + dy;
-              const dep = readDepth(xs, y);
-              for (let q = 0; q < xs.length; q++) {
-                const x = xs[q];
+              for (const x of xs) {
                 if (x < 0 || x >= W || y < 0 || y >= H) continue;
                 if (changed(A, noWater, x, y)) sea++;
-                else if (!isFinite(dep[q]) || dep[q] <= 0 || dep[q] > 4000) sky++;
                 else ground++;
               }
             }
-            const total = sea + sky + ground || 1;
+            const total = sea + ground || 1;
             const rec = {
-              h: bb.h, sea, sky, ground,
+              h: bb.h, sea, ground,
               /* Half the band is the bar: a boot with more sea than ground
                  under it is a boot on the sea. */
-              floating: (sea + sky) > total * 0.5,
-              kind: sea > ground ? 'STANDING ON THE SEA'
-                : sky > ground ? 'standing on sky (over a lip)'
-                  : 'ground',
+              floating: sea > total * 0.5,
+              kind: sea > ground ? 'STANDING ON THE SEA' : 'ground',
             };
             if (!verdict[k] || bb.h > verdict[k].h) verdict[k] = rec;
           }
@@ -203,13 +215,13 @@ for (const SEED of SEEDS) {
         + (bads.length ? `   ◀── ${bads.length} OVER SEA OR SKY` : ''));
       for (const v of judged) {
         console.log(`       ${v.floating ? 'BAD  ' : '  ok '} ${String(v.h).padStart(4)} px tall`
-          + `   under the boots: sea ${v.sea} / sky ${v.sky} / ground ${v.ground}   ${v.kind}`);
+          + `   under the boots: sea ${v.sea} / ground ${v.ground}   ${v.kind}`);
       }
     }
   });
 }
 
-console.log(`\n  TOTAL: ${bad} of ${seen} judged figures stand on sea or sky`
+console.log(`\n  TOTAL: ${bad} of ${seen} judged figures stand on the sea`
   + ` (${(100 * bad / Math.max(seen, 1)).toFixed(0)}%)`);
 for (const w of worst) console.log('    ' + w);
 

@@ -62,13 +62,35 @@ collect(buildCar(0).root, 'car');
 let bad = 0;
 for (const [label, geo] of cases) {
   const r = audit(geo);
+  /* A set this tool could not audit has not passed it.
+   *
+   * `pct` used to fall back to 0 when `r.tris` was 0, and 0 is under the 1% bar,
+   * so a geometry with no normal attribute at all — `audit`'s own early return,
+   * which reports `tris: 0` and the note "no normal attribute" — printed a tick.
+   * So did one with no triangles. The winding audit passing on a geometry whose
+   * winding it never looked at is the shape this suite has shipped four times;
+   * a builder that stopped emitting normals would have been reported as
+   * consistent, in green, with the reason printed alongside the tick.
+   *
+   * Every case here is a real mesh with thousands of triangles today (the
+   * smallest is a 12-triangle box), so nothing is being reclassified — the hole
+   * was latent. It is closed by making "could not audit" its own failure rather
+   * than a zero. */
+  const unaudited = !r.tris || !!r.note;
   const pct = r.tris ? (100 * r.flipped / r.tris) : 0;
-  const ok = pct < 1;
+  const ok = !unaudited && pct < 1;
   if (!ok) bad++;
   console.log(`  ${ok ? '✓' : '✗'} ${label.padEnd(18)} ${String(r.tris).padStart(6)} tris` +
     `  ${pct.toFixed(1)}% wound against their normals` +
     (r.degenerate ? `  (${r.degenerate} degenerate)` : '') +
-    (r.note ? `  ${r.note}` : ''));
+    (r.note ? `  ${r.note}` : '') +
+    (unaudited ? '  ◀── NOT AUDITED, not a pass' : ''));
 }
-console.log(bad ? `\n  ${bad} geometry set(s) disagree with themselves` : '\n  all geometry consistent');
+console.log(bad ? `\n  ${bad} geometry set(s) disagree with themselves or could not be audited`
+  : '\n  all geometry consistent');
+/* A run with no cases in it has not passed either. */
+if (!cases.length) {
+  console.log('  FAIL no geometry sets were built at all');
+  bad++;
+}
 process.exit(bad ? 1 : 0);

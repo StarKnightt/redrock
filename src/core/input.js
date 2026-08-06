@@ -1,4 +1,4 @@
-/* Keyboard and gamepad, reduced to four analogue axes.
+/* Keyboard, gamepad and touch, reduced to four analogue axes.
  *
  * This layer reports what the driver is asking for and nothing else. The
  * smoothing that turns a key press into a steering angle lives in Car.step,
@@ -18,6 +18,14 @@
  * The second is that the two stages fought. A linear ramp here feeding an
  * exponential in the car took 400 ms to reach 90% of lock, which is a long
  * time to hold a key before the car does what you asked.
+ *
+ * THE THIRD SOURCE IS TOUCH, and it is attached rather than constructed here.
+ * `this.touch` is a src/ui/touch.js instance or null, set by main.js, and it is
+ * NULL ON EVERY DEVICE WITHOUT A TOUCHSCREEN and on every tool run — so the
+ * whole of what a keyboard or pad player pays for it is the `if (touch)` in
+ * `update`. It obeys the same no-smoothing rule for the same measured reason:
+ * every value it reports is a position read off the hardware, either the angle
+ * the phone is being held at or where on a pedal the thumb is sitting.
  */
 const KEYS = {
   left: ['ArrowLeft', 'KeyA'],
@@ -144,6 +152,19 @@ export class Input {
     this.lookBack = false;
     this.resetPressed = false;
     this.skipPressed = false;
+    /* A tap on the glass, as an EDGE, and deliberately not folded into
+       `confirmPressed` or `resetPressed` here.
+     *
+     * Both of those already mean something on a moving car — `reset` respawns
+       twelve metres back up the road — and a phone player's thumb is on the
+       glass for the whole race. So the tap is reported as its own signal and
+       main.js decides where it is allowed to mean anything, which is the two
+       screens where a phone player is otherwise stranded: the title, whose
+       prompt names Enter and a pad button, and the results card, whose prompt
+       names R and Select. A phone has none of the four. */
+    this.tapPressed = false;
+    /* Set by main.js when there is a touchscreen. See the header. */
+    this.touch = null;
     /* The shell's four edges. Every one of them is an EDGE and not a level:
        a menu driven by a level scrolls three items on one press. */
     this.pausePressed = false;
@@ -221,6 +242,26 @@ export class Input {
       hb = Math.max(hb, level(PAD.south));
     }
 
+    /* Touch, on exactly the pad's terms.
+     *
+     * The pedals take the greater of what is already asked for, like the pad's
+     * triggers, so nothing a keyboard is doing can be cancelled by a control
+     * nobody is holding. Steering overrides only when it is non-zero, which is
+     * the pad's `if (dz)` rule and is here for the same reason: at rest the
+     * value is exactly zero — the tilt deadzone and the drag deadzone both
+     * return 0, not a small number — so a source at rest cannot veto a source
+     * that is being used.
+     *
+     * Last of the three, so on a phone the glass wins. There is no device on
+     * which that costs anything: a machine with a keyboard has no touch object
+     * at all. */
+    const touch = this.touch;
+    if (touch && touch.live) {
+      if (touch.steer !== 0) steerWant = touch.steer;
+      thr = Math.max(thr, touch.throttle);
+      brk = Math.max(brk, touch.brake);
+    }
+
     /* Raw. A stick is already a position and a key is already a request; the
        car decides how fast the wheel is allowed to follow either. */
     this.steer = steerWant;
@@ -265,6 +306,12 @@ export class Input {
        pause edge because that is exactly what pause means while a menu is
        already up: the caller toggles. */
     if (padEdge(PAD.east)) this.pausePressed = true;
+
+    /* Consumed here and nowhere else, so exactly one frame carries the edge —
+       the same contract every flag above keeps. Taken unconditionally when
+       there is a touch object so a tap cannot sit in the queue and fire later
+       on a screen that means something different by it. */
+    this.tapPressed = touch ? touch.takeTap() : false;
 
     this._padWas.length = 0;
     if (pad) for (let i = 0; i < pad.buttons.length; i++) {

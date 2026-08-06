@@ -29,6 +29,7 @@ import { Ending, stopControl, scrubSpeed } from './race/ending.js';
 import { Hud } from './ui/hud.js';
 import { Title } from './ui/title.js';
 import { Pause } from './ui/pause.js';
+import { Touch, isPhone, safeInsets } from './ui/touch.js';
 import { Audio } from './audio/index.js';
 
 /* Low and raking, from behind the driver's left shoulder for most of the
@@ -289,12 +290,37 @@ class Game {
     this._acc = 0; this._frames = 0;
     this._simAcc = 0;         // unspent simulation time, always under one substep
     this._slowmoId = -1; this._slowmoOn = false;
+    /* Last frame's countdown hold, so the release is an edge. See step(). */
+    this._heldWas = false;
     this._fxLaunchId = 0; this._followed = -1;
     this.time = 0;
 
     const q = new URLSearchParams(location.hash.slice(1));
     this._manual = location.hash.includes('manual');
-    this.tier = TIERS[q.get('tier')] ? q.get('tier') : 'high';
+    /* THE TIER, AND WHY A PHONE PICKS ITS OWN.
+     *
+     * An explicit `?tier=` still wins, first and unconditionally, because the
+     * whole tool suite depends on asking for a tier and getting it — every
+     * capture, every budget run and every parity sweep names one. Auto-selection
+     * only fills the gap where nothing was asked for, which on a phone is
+     * always, because a phone visitor types no query string.
+     *
+     * `low` and not `medium`, and the reason is not the shadow map. Since the
+     * shadow fix the whole GPU frame is 1.78 ms at `high` on a 4060, so the map
+     * is no longer what a phone cannot afford — the FILL RATE is. `low`'s
+     * `dpr: 0.75` is the only tier constant that touches it, and it is a 44%
+     * cut in pixels shaded against `medium`'s none; a phone at devicePixelRatio
+     * 3 is otherwise rendering more pixels than the desktop this game was
+     * tuned on. `medium` would keep the pixels and save only the map, which is
+     * the smaller half of the problem on that hardware.
+     *
+     * See `isPhone` in src/ui/touch.js for what the detection gets wrong, which
+     * is written down there rather than discovered later. The short version:
+     * `pointer: coarse` alone would demote a touchscreen laptop, so the test is
+     * three media/capability signals AND a panel size, and the one it still
+     * gets wrong is a cheap large-panel Android tablet, which stays on `high`. */
+    this.tier = TIERS[q.get('tier')] ? q.get('tier')
+      : (isPhone() ? 'low' : 'high');
     /* Seed 22 out of a scored sweep of forty-eight (tools/seeds.mjs): no self
        crossing under 26 m of clearance, 5.6 km, 467 m of drop, corner radii
        from 24 m to 250 m, 30% of it straight, and a compact 945 x 1026 m
@@ -537,10 +563,47 @@ class Game {
     addEventListener('pointerdown', wake, { once: true });
     addEventListener('keydown', wake, { once: true });
 
+    /* THE TOUCH CONTROLS, on exactly the terms the title screen is on.
+     *
+     * `enabled: !manual` is the dormancy rule and not a convenience. Every
+     * harness run passes `manual` (tools/harness.mjs defaults `hash` to exactly
+     * 'manual'), so `Touch.live` is false for every tool in the suite, so
+     * `display()` returns null, so the HUD's draw path is the one it had before
+     * this landed — which is what tools/hudparity.mjs gates at 0 differing
+     * bytes. ?touch=1 is the escape hatch, on the same terms as ?countdown=1,
+     * and tools/touch.mjs is the one tool that uses it.
+     *
+     * Beneath that gate there is a second, stronger one that no query string
+     * can open: `touchPrimary()`. A machine with no touchscreen has no controls
+     * even with ?touch=1, because there is nothing for them to be operated
+     * with and drawing them would be a lie about the hardware. */
+    const wantTouch = q.has('touch')
+      ? q.get('touch') !== '0'
+      : !this._manual;
+    this.touch = new Touch({
+      enabled: wantTouch,
+      /* Three ergonomic constants this round could reason about but not
+         measure, exposed so the first person with a real phone can settle them
+         in a minute. See src/ui/touch.js, which argues each of them. */
+      fullDeg: q.has('tiltdeg') ? +q.get('tiltdeg') : undefined,
+      deadDeg: q.has('tiltdead') ? +q.get('tiltdead') : undefined,
+      exp: q.has('tiltexp') ? +q.get('tiltexp') : undefined,
+    });
+    /* The third input source. Null on a desktop would also work — see the
+       header of src/core/input.js — but handing over the object unconditionally
+       and letting `live` decide keeps the branch in one place. */
+    this.input.touch = this.touch;
+
     this.s = 30;            // capture-camera position along the stage, metres
     if (this.freeCam) this.placeCamera();
     this.resize();
     addEventListener('resize', () => this.resize());
+    /* A phone reports a rotation as `orientationchange` and does NOT always
+       follow it with a `resize` in the same turn — and even when it does, the
+       viewport it reports during the change is briefly the old one. Re-running
+       the layout on both is idempotent and costs a desktop nothing, since a
+       desktop never fires this. */
+    addEventListener('orientationchange', () => this.resize());
   }
 
   buildStage() {
@@ -931,7 +994,25 @@ class Game {
     const w = innerWidth, h = innerHeight;
     this.renderer.setSize(w, h, false);
     this.pipeline.setSize(w, h);
-    this.hud.resize(w, h, devicePixelRatio);
+    /* The safe area, read once per resize and handed to both consumers.
+     *
+     * `safeInsets()` returns four zeroes on every machine with no notch and on
+     * every headless run, and `Hud.resize` treats zeroes as the expression they
+     * replace — `m + 0` is `m` in binary — so a desktop layout is not merely
+     * equivalent to the old one, it is identical. See src/ui/hud.js resize(),
+     * which carries the measurement of the bug this fixes: four of five HUD
+     * elements under hardware on a phone in landscape.
+     *
+     * Read here rather than inside the HUD because the touch controls need the
+     * same four numbers and a control under the home indicator is worse than a
+     * readout under it — the operating system takes the touch as well as the
+     * pixels. One read, one source of truth. */
+    const ins = safeInsets();
+    if (this.touch) this.touch.resize(w, h, ins);
+    this.hud.resize(w, h, devicePixelRatio, {
+      insets: ins,
+      touch: this.touch ? this.touch.live : false,
+    });
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     /* The one case where the frozen frame has to be redrawn. `frame` stops
@@ -995,6 +1076,25 @@ class Game {
        happened. Nothing else in this method may run ahead of it. */
     this.input.update(dt);
 
+    /* PORTRAIT ON A PHONE OWNS THE FRAME, ahead of the title and the pause.
+     *
+     * It is the same shape as both of those — an absence, not a mechanism: no
+     * substep runs, no clock advances, the countdown is not fed, and the title's
+     * poster does not animate behind it, so rotating back resumes exactly where
+     * the player was rather than three seconds into a race they could not see.
+     *
+     * Ahead of the title deliberately. The title is the first thing a phone
+     * visitor would otherwise reach and it is set at 84u — 45 px on a 390 px
+     * viewport — under a lens with a 32.8 degree horizontal cone. Showing the
+     * poster first and the rotate screen second would mean the game's opening
+     * frame is the one composed for the wrong shape.
+     *
+     * `Touch.rotate` is false unless there is a touchscreen AND the controls are
+     * wanted (see its getter), so a desktop player who makes their window tall
+     * gets the narrow lens and no interruption, and no tool can ever be held
+     * here. */
+    if (this.touch.rotate) return this.stepRotate();
+
     /* ---- the shell ------------------------------------------------------
      *
      * Two states that own the whole frame, and each of them is an ABSENCE
@@ -1044,6 +1144,16 @@ class Game {
       if (this.ending.canRestart) this.restart();
       else if (!this.raceOver) this.respawn();
     }
+    /* And a tap gives the FIRST of those three answers only.
+     *
+     * A phone player's thumb is on the glass for the whole descent, so a tap
+     * that could respawn the car would be a control that throws the race away
+     * by accident — `respawn` puts the car twelve metres back up the road. On
+     * the results card there is nothing to lose and no other way out: the
+     * card's prompt names R and Select, and a phone has neither, so without
+     * this a phone run ends permanently at the classification. `canRestart` is
+     * the ending's own flag and is false for every frame before the line. */
+    if (this.input.tapPressed && this.ending.canRestart) this.restart();
 
     const p = this.player;
     p.lastImpact = 0;
@@ -1069,6 +1179,22 @@ class Game {
        and neither the player's race clock nor anyone else's can advance,
        because `Car.step` is where race time is counted and it is not called. */
     const holding = cd.holding;
+    /* THE CALIBRATION WINDOW IS THE COUNTDOWN, and it is free.
+     *
+     * Nobody holds a phone flat. Assuming the resting attitude is zero is a
+     * game that steers into the barrier for the whole descent, so the neutral
+     * has to be captured from the player rather than assumed — and the three
+     * seconds on the line are the one window in the game where the player is
+     * holding the phone still, watching the lights, and steering has no
+     * consequence. Taken on the falling edge rather than at the start of the
+     * hold so the third of a second `calibrate` averages over is the attitude
+     * they settled into, not the jolt of the tap that got them here.
+     *
+     * A run with no countdown (?countdown=0, or a skip) never sees this edge
+     * and is calibrated by `startRace` instead; a player who drifts off neutral
+     * later has the CENTRE control. All three paths set the same field. */
+    if (this._heldWas && !holding) this.touch.calibrate();
+    this._heldWas = holding;
     /* Fixed 120 Hz substeps. The tyre model stiffens as slip grows, and at a
        variable 60 Hz a hard kerb strike can integrate into a slip angle the
        next frame cannot recover from — the car snaps. Substepping costs very
@@ -1298,6 +1424,10 @@ class Game {
          title would leave the poster drawn over the grid forever. */
       title: null,
       pause: null,
+      /* Null on every device without a touchscreen and on every tool run — see
+         Touch.display(), where the null is argued, and Hud.draw, which is the
+         path it keeps identical. */
+      touch: this.touch.display(),
     });
   }
 
@@ -1315,7 +1445,13 @@ class Game {
     /* Enter starts. `skipPressed` is in the test as well because Enter is on
        both lists and a player who has come back to the title from a pause
        menu should not have to discover a second key. */
-    if (this.input.confirmPressed || this.input.skipPressed) return this.startRace();
+    /* And a tap, which is the ONLY way in on a phone: the prompt on the poster
+       reads TAP TO START there, because Enter and a pad's south button are two
+       controls a phone does not have and naming them is how this screen became
+       a dead end for every phone visitor. `tapPressed` is false unless there is
+       a touchscreen and the controls are wanted, so no tool can trip it. */
+    if (this.input.confirmPressed || this.input.skipPressed
+      || this.input.tapPressed) return this.startRace();
     this.titleCamera();
     /* The crowd is the only thing moving in the frame apart from the lens,
        and that is most of why the shot is worth looking at. `dt` is the right
@@ -1329,6 +1465,32 @@ class Game {
     this.hud.update(dt, {
       speed: 0, countdown: null, ending: null, pause: null,
       title: this.title.display(),
+      /* The controls are not drawn over the poster — `_drawTitle` returns
+         before them — but the payload still has to be current, because the same
+         object carries `rotate` and because `Hud.update` is an Object.assign
+         onto persistent state: a field left absent keeps whatever it was last
+         given. */
+      touch: this.touch.display(),
+    });
+  }
+
+  /**
+   * One frame of the rotate screen.
+   *
+   * Nothing is stepped and nothing is read except the viewport. The screen it
+   * draws is composed rather than warned — see Hud._buildRotate — because it is
+   * the first thing a phone visitor sees and a bare line of text there says the
+   * game was not expecting them.
+   *
+   * It takes no `dt` while its two siblings do, and that is the dormancy rule
+   * rather than an omission: nothing on this screen varies with time, so there
+   * is no clock for a frame to advance. A screen with one is a screen a tool
+   * cannot photograph twice.
+   */
+  stepRotate() {
+    this.hud.update(0, {
+      speed: 0, countdown: null, ending: null, pause: null, title: null,
+      touch: this.touch.display(),
     });
   }
 
@@ -1386,6 +1548,15 @@ class Game {
        of a composed shot, and it is the same call restart() and every
        teleport already make. */
     this.chase.started = false;
+    /* Take the attitude the phone is being held at as straight ahead.
+     *
+     * Belt and braces under the countdown's own release edge in `step`, which is
+     * the better window and the one that normally does this — but a run with
+     * ?countdown=0, or one where the player skipped the lights, never sees that
+     * edge, and a player who tapped START while holding the phone at fifteen
+     * degrees must not spend the next four minutes fighting it. No-ops when
+     * there is no gyroscope, which is every desktop. */
+    this.touch.calibrate();
   }
 
   /**
@@ -1428,7 +1599,11 @@ class Game {
 
     /* Zero, not `dt`: see above. The payload is null the moment the menu
        closed, so the frame after a resume is the racing HUD again. */
-    this.hud.update(0, { pause: this.pause.display() });
+    /* `touch: null` and not the live payload. A pause cannot be opened on a
+       phone at all — the only two things that open it are Escape and a pad's
+       Start — so this is not a case that arises; drawing inoperable controls
+       under a menu that has seized the frame would be wrong if it did. */
+    this.hud.update(0, { pause: this.pause.display(), touch: null });
   }
 
   /**
@@ -1803,7 +1978,16 @@ class Game {
      *
      * It also happens to cost nothing: a paused frame is one 2D redraw and no
      * GL work at all. */
-    if (!this.pause.active) this.pipeline.render();
+    /* And not while the rotate screen is up either, for a reason the pause's
+       argument does not cover: that screen is an OPAQUE ink field (see
+       Hud._drawRotate), so every GL pixel behind it is thrown away. On a phone
+       at devicePixelRatio 3 that is a full-resolution render of a picture
+       nobody can see, on a device that is already the reason this build has a
+       tier of its own. Conditional on the HUD being drawn at all, because with
+       ?hud=0 there is nothing covering it and the screen would simply be
+       black. */
+    const hideForRotate = this.hudOn && this.touch.rotate;
+    if (!this.pause.active && !hideForRotate) this.pipeline.render();
     if (this.hudOn) this.hud.draw();
   }
 

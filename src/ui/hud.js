@@ -355,6 +355,14 @@ export class Hud {
          branches, and _drawTitle / _drawPause, which own everything else. */
       title: null,
       pause: null,
+      /* The on-screen controls, or null — which it is on every device without
+         a touchscreen and on every tool run. src/ui/touch.js owns the geometry
+         and hands it over on this payload, so nothing in this file knows where
+         a pedal is; the paint and the touch target are the same rectangle by
+         construction. Null is load-bearing exactly as it is for the three
+         above: tools/hudparity.mjs gates the no-touch path at 0 differing
+         bytes across 20 states. */
+      touch: null,
     };
     this.needle = 0;                   // displayed km/h, chases state.speed
     this.needleVel = 0;
@@ -377,6 +385,15 @@ export class Hud {
        Both stay null for the whole of every race. */
     this._title = null; this._titleKey = '';
     this._pause = null; this._pauseL = null; this._pauseKey = '';
+    /* The two facts a touch build changes about the FURNITURE rather than
+       adding to it: where the dial and the badge sit, and what the title and
+       the results card tell the player to press. Both false and zero on every
+       device without a touchscreen and in every tool run — see resize(), which
+       is the only thing that sets them, and which every existing caller
+       invokes with three arguments. */
+    this.touchUi = false;
+    this.insets = { top: 0, right: 0, bottom: 0, left: 0 };
+    this._rotate = null; this._rotateKey = '';
   }
 
   /**
@@ -429,18 +446,62 @@ export class Hud {
     return true;
   }
 
-  resize(w, h, dpr = 1) {
+  /**
+   * @param {number} w CSS px
+   * @param {number} h CSS px
+   * @param {number} [dpr]
+   * @param {{insets?:{top:number,right:number,bottom:number,left:number},
+   *          touch?:boolean}} [opts]
+   *
+   * `opts` is new and every existing caller omits it — tools/hudparity.html,
+   * tools/hud.html and tools/gamut.html all call `resize(w, h, dpr)`. With it
+   * omitted the four insets are zero and `touch` is false, and every quantity
+   * below is the expression it was: `m + 0` is `m` exactly in binary, so the
+   * no-touch, no-notch layout is not merely equivalent but identical. That is
+   * what tools/hudparity.mjs measures at 0 differing bytes.
+   */
+  resize(w, h, dpr = 1, opts = {}) {
     this.w = w; this.h = h; this.dpr = dpr;
     this.canvas.width = Math.round(w * dpr);
     this.canvas.height = Math.round(h * dpr);
     this.canvas.style.width = w + 'px';
     this.canvas.style.height = h + 'px';
 
+    const I = opts.insets || {};
+    this.insets = {
+      top: I.top > 0 ? I.top : 0, right: I.right > 0 ? I.right : 0,
+      bottom: I.bottom > 0 ? I.bottom : 0, left: I.left > 0 ? I.left : 0,
+    };
+    this.touchUi = opts.touch === true;
+
     /* Everything scales off the short side so 16:9 and ultrawide get the
        same-sized furniture; the wide screen just gets more sky between it. */
     const u = Math.min(w, h) / 720;
     const m = 30 * u;
     const dialR = 98 * u;
+    /* THE MARGIN IS NOW MEASURED FROM THE SAFE AREA AND NOT FROM THE GLASS.
+     *
+     * This is the fix for a real, measured bug rather than a precaution.
+     * index.html has always carried `viewport-fit=cover`, which extends the
+     * layout under the notch, the home indicator and the rounded corners, and
+     * nothing in the tree read an inset — so on a phone in landscape the
+     * elevation card, the traffic strip, the speed dial and the position badge
+     * all sat under hardware, four of five elements, because `m` is 30u =
+     * 16.3 px there and the intrusion is 43 px (.fix/FINDINGS-mobile.md §6).
+     *
+     * One inset per edge and not one number for all four, because a notch is
+     * not symmetrical: in landscape it eats one side and the home indicator
+     * eats a strip off the bottom, and insetting the other three by the worst
+     * of them would throw away screen for nothing on the edges that are clear.
+     *
+     * The timer plate is deliberately left centred on the VIEWPORT rather than
+     * on the safe area. In landscape — the only orientation this game is
+     * played in — the intrusion is on the left or right edge and runs the full
+     * height, so the top centre is clear; centring on the safe area instead
+     * would nudge a plate that is not in danger and would move it on desktop
+     * the moment any inset were ever non-zero. */
+    const mT = m + this.insets.top, mR = m + this.insets.right;
+    const mB = m + this.insets.bottom, mL = m + this.insets.left;
     /* Hoisted out of the literal below because the traffic strip is measured
        off them: it takes the card's width and the card's 16u ridge inset, so
        the two objects share one column and one horizontal axis width. */
@@ -448,15 +509,38 @@ export class Hud {
     const mapH = 118 * u;
     this.L = {
       u, m,
-      dial: { r: dialR, cx: w - m - dialR, cy: h - m - dialR },
-      map: { x: m, y: m, w: mapW, h: mapH },
+      /* The four safe-area margins, for the two consumers that cannot read
+         them off a rect in here: _drawPosition, whose badge is sized from its
+         own text and so has no entry, and _drawTouch's hint slab. */
+      pad: { t: mT, r: mR, b: mB, l: mL },
+      touch: this.touchUi,
+      /* THE DIAL AND THE BADGE MOVE ON A TOUCH BUILD, and only there.
+       *
+       * They have to. A throttle pedal in the bottom-right corner of a
+       * 844x390 viewport occupies x 746..818, y 239..372, and the dial sits at
+       * x 721..828, y 267..374 — the same pixels, with the most-read
+       * instrument in the game under the thumb that is holding the throttle
+       * down. The badge and the brake collide the same way on the other side.
+       *
+       * Rejected: shrinking the pedals to fit around them. A touch target is a
+       * physical quantity and 44 CSS px is the floor (src/ui/touch.js), so
+       * there is nothing to give.
+       *
+       * So on a phone the readouts take the top band and the thumbs take the
+       * bottom one: the left column runs card, strip, badge from the top, the
+       * timer stays top centre, and the dial goes top right — which mirrors
+       * the card and leaves the whole bottom third to the controls. It is a
+       * better phone layout than the one it replaces and it is unreachable
+       * from a build with no touchscreen. */
+      dial: { r: dialR, cx: w - mR - dialR, cy: this.touchUi ? mT + dialR : h - mB - dialR },
+      map: { x: mL, y: mT, w: mapW, h: mapH },
       /* The field, under the stage card. See _drawStrip for why it is a second
          object rather than three more marks on the card. */
       strip: {
-        x: m, y: m + mapH + 8 * u, w: mapW, h: 34 * u,
+        x: mL, y: mT + mapH + 8 * u, w: mapW, h: 34 * u,
         pad: 16 * u, half: (mapW - 32 * u) / 2, r: 5.5 * u, ink: 3 * u,
       },
-      timer: { size: 30 * u, y: m },
+      timer: { size: 30 * u, y: mT },
       pos: { numSize: 66 * u, sufSize: 26 * u },
       /* The classification card. Sized off the widest thing it has to set —
          a four-column row of position, name, time and gap at 22 grid units —
@@ -523,6 +607,14 @@ export class Hud {
        there they say the game is already running and the player has stalled
        it. Null for every frame of every race, so this branch costs the
        running game one comparison. */
+    /* PORTRAIT ON A PHONE REPLACES EVERYTHING, including the title, and it is
+       the first branch for that reason: a 32.8 degree horizontal cone is not a
+       degraded game, it is a different and unplayable one
+       (.fix/FINDINGS-mobile.md §6). `touch` is null on every device without a
+       touchscreen and on every tool run, so this costs the running game one
+       property read and one comparison. */
+    const tc = this.state.touch;
+    if (tc && tc.rotate) return this._drawRotate(ctx);
     const ti = this.state.title;
     if (ti) return this._drawTitle(ctx, ti);
     /* The running furniture steps back while the classification is up, and
@@ -548,6 +640,11 @@ export class Hud {
     if (e) ctx.globalAlpha = 1;
     if (this.state.countdown) this._drawCountdown(ctx);
     if (e) this._drawResults(ctx, e);
+    /* The controls sit over the instruments and under the pause, because a
+       thumb is over the screen in exactly that sense. Under the countdown too:
+       the lights are the one thing in the game that must not be obscured, and
+       the pedals are not yet doing anything while they are up. */
+    if (tc) this._drawTouch(ctx, tc);
     /* Last, and over everything including the countdown and the card, because
        a pause is a statement about the whole frame and not another instrument
        in it. Null for every frame of every race. */
@@ -676,7 +773,11 @@ export class Hud {
     if (e.prompt > 0.01) {
       ctx.save();
       ctx.globalAlpha = clamp(e.alpha * e.prompt, 0, 1);
-      const txt = 'R OR SELECT TO RACE AGAIN';
+      /* Touch names the one control a phone has, for the reason _buildTitle
+         gives at length: R and Select do not exist there, and a results card
+         that names them is where a phone run ends permanently. False for every
+         desktop frame and every tool frame. */
+      const txt = this.touchUi ? 'TAP TO RACE AGAIN' : 'R OR SELECT TO RACE AGAIN';
       const ps = 19 * u;
       const pw = textWidth(txt, ps, 0.7) + 26 * u, ph = ps + 14 * u;
       const px = cx - pw / 2, py = cy + ch / 2 + 16 * u;
@@ -1391,8 +1492,15 @@ export class Hud {
     const st = this.state;
     const key = st.position + '/' + st.fieldSize;
     if (key !== this._badgeKey) { this._buildBadge(); this._badgeKey = key; }
-    const { m, u } = this.L;
-    const x = m, y = this.h - m - this._badge.h;
+    const { u } = this.L;
+    /* `pad.l` and `pad.b` are `m` exactly when there is no notch, so the two
+       expressions below are the two they replace on every desktop frame. The
+       touch branch lifts the badge into the left column under the traffic
+       strip, for the reason given at `dial` in resize(): the bottom corners
+       belong to the thumbs. */
+    const P = this.L.pad, S = this.L.strip;
+    const x = P.l;
+    const y = this.L.touch ? S.y + S.h + 8 * u : this.h - P.b - this._badge.h;
     const cue = this._positionAccent;
     /* The exact old path. Keeping it as an early return is what makes a
        dormant accent byte-identical instead of merely visually equivalent. */
@@ -1532,7 +1640,11 @@ export class Hud {
    * with the block's own margins, and the whole thing pops in as one object.
    */
   _drawTitle(ctx, t) {
-    const key = `${this.w}x${this.h}@${this.dpr}|${t.seed}|${this.finishS}`;
+    /* `touchUi` is in the key because it changes what the prompt says, and it
+       is false on every device without a touchscreen and on every tool run —
+       so the key is the string it was and the layer is the layer it was. */
+    const key = `${this.w}x${this.h}@${this.dpr}|${t.seed}|${this.finishS}`
+      + (this.touchUi ? '|t' : '');
     if (key !== this._titleKey) { this._buildTitle(t.seed); this._titleKey = key; }
     const L = this._title;
     /* Above centre for the countdown's reason: the horizon sits at about a
@@ -1694,9 +1806,18 @@ export class Hud {
          tolerate, and would oblige this element to go inert under
          Game.autopilot(true) the way the countdown, the ending and the
          overtake accents do. Paying that for nothing is the wrong trade.
-         .fix/pk/slabfit.mjs has the table. */
+         .fix/pk/slabfit.mjs has the table.
+
+         THE ONE EXCEPTION, and it is not a softening of that argument but an
+         application of it. A phone has no Enter key and no A button, so on a
+         touch build the static string is not merely longer than it needs to be,
+         it names two controls that do not exist and the screen becomes a dead
+         end — which is precisely the bug this whole round exists to fix. The
+         switch is on `touchUi`, which is set only from resize()'s `opts` and is
+         therefore false for every existing caller including hudparity's, so
+         the desktop string is not conditional in any way a tool can reach. */
       const py = cy0 + chipH + promptGap;
-      const txt = 'ENTER OR A TO START';
+      const txt = this.touchUi ? 'TAP TO START' : 'ENTER OR A TO START';
       const pw = textWidth(txt, promptSize, 0.7) + 30 * u;
       const px = (cw - pw) / 2;
       g.fillStyle = SHADOW;
@@ -1842,6 +1963,275 @@ export class Hud {
         const y = P.headH + i * P.rowH;
         g.beginPath(); g.moveTo(12 * u, y); g.lineTo(cw - 12 * u, y); g.stroke();
       }
+    });
+  }
+
+  /* ---- the on-screen controls -------------------------------------------- */
+
+  /**
+   * The touch controls, from src/ui/touch.js's `display()` payload.
+   *
+   * AUTHORED IN CSS PIXELS, which is the one place in this file that does not
+   * scale off `u`, and the geometry is not this file's at all — every rectangle
+   * arrives on the payload. Both facts have the same cause and it is worth
+   * stating once: a control is HIT as well as read, so its size is a physical
+   * quantity (see src/ui/touch.js's PED_W, which carries the 44 px argument),
+   * and paint that is derived separately from the hit test drifts away from it.
+   * Drawing exactly the rectangle that was tested is the only arrangement in
+   * which what the player presses is what the player sees.
+   *
+   * NOTHING HERE VARIES WITH TIME. `steer` is the angle the phone is being
+   * held at and `amount` is where on the pedal a thumb is sitting; both are
+   * positions read off the hardware, not values ramping toward a target (the
+   * no-smoothing rule, src/core/input.js). So this needs no dormancy clock of
+   * its own — the payload is simply null under manual mode, which is the
+   * countdown's and the ending's arrangement rather than a new one.
+   */
+  _drawTouch(ctx, tc) {
+    /* One scale for the whole control set, off the SHORT side and against a
+       390 px reference — a phone in landscape, the only shape this draws in.
+       So `k` is 1 on an iPhone and about 1.9 on a 10-inch tablet, and the
+       type grows with the pedal it labels rather than with `u`, which is 0.54
+       on the same phone and would set these captions at 11 px. */
+    const k = Math.min(this.w, this.h) / 390;
+    const ink = 3 * k;
+
+    for (const p of tc.pedals) {
+      const isBrake = p.kind === 'brake';
+      /* The chamfer, off the SHORT side, so a tall capsule keeps parallel
+         flanks instead of turning into a lozenge with no straight edge for the
+         thumb to find. */
+      const c = Math.min(p.w, p.h) * 0.26;
+      ctx.fillStyle = SHADOW;
+      chamfer(ctx, p.x + 3 * k, p.y + 4 * k, p.w, p.h, c); ctx.fill();
+      /* Cream body, coloured fill, ink outline — the timer's delta chip and
+         the pause plate's spine in a different arrangement, so a control reads
+         as the same printed object as the instruments it sits beside. */
+      ctx.fillStyle = CREAM;
+      chamfer(ctx, p.x, p.y, p.w, p.h, c); ctx.fill();
+
+      /* The fill IS the command, and it rises from the foot because that is
+         the end the thumb pushes. A player learns the detent by watching this
+         go solid the moment they cross it, which is the only teaching a
+         control with no travel can offer. */
+      const amt = clamp(p.amount, 0, 1);
+      if (amt > 0) {
+        ctx.save();
+        chamfer(ctx, p.x, p.y, p.w, p.h, c); ctx.clip();
+        ctx.fillStyle = isBrake ? RED : GREEN;
+        ctx.fillRect(p.x, p.y + p.h * (1 - amt), p.w, p.h * amt + 1);
+        ctx.restore();
+      }
+      /* Where full commences. A hairline rather than a second plate, in the
+         demoted cream the dial face and the results card already use for a
+         step in the paper. */
+      if (tc.detent > 0) {
+        const dy = p.y + p.h * (1 - tc.detent);
+        ctx.save();
+        chamfer(ctx, p.x, p.y, p.w, p.h, c); ctx.clip();
+        ctx.lineWidth = 1.6 * k;
+        ctx.strokeStyle = amt >= tc.detent ? CREAM : CREAM_DIM;
+        ctx.beginPath(); ctx.moveTo(p.x, dy); ctx.lineTo(p.x + p.w, dy); ctx.stroke();
+        ctx.restore();
+      }
+      ctx.lineWidth = ink; ctx.lineJoin = 'round'; ctx.strokeStyle = INK;
+      chamfer(ctx, p.x, p.y, p.w, p.h, c); ctx.stroke();
+
+      /* Outlined type, not flat, because the fill slides underneath it: a
+         cream caption is invisible on cream and an ink one is invisible on
+         red. Cream over an ink outline reads on both, which is the same
+         reason the world's cel shader outlines everything it draws. */
+      const ls = Math.max(11, Math.min(17, p.w * 0.20));
+      /* Below the chamfer, not on it: at the very top the capsule is still
+         narrowing and the caption hangs over both cut corners — caught in
+         .fix/tprobe3.png, where BRAKE and GAS straddled the top edge. */
+      drawText(ctx, isBrake ? 'BRAKE' : 'GAS', p.x + p.w / 2, p.y + c * 0.55, ls,
+        { align: 'center', color: CREAM, outline: 2.6 * k, weight: 1.35, tracking: 0.9 });
+    }
+
+    /* The steering readout. It is a READOUT and not a control — the control is
+       the phone itself, or a drag anywhere outside the pedals — and it exists
+       because a tilt has no visible zero. Without it a player who has drifted
+       off neutral has no way to tell a mis-calibration from a car that
+       understeers, which is the single most confusing failure this scheme has.
+       The datum notch is the answer to that: mark on the notch, wheel
+       straight. */
+    const b = tc.bar;
+    const bc = b.h * 0.5;
+    ctx.fillStyle = SHADOW;
+    chamfer(ctx, b.x + 2 * k, b.y + 3 * k, b.w, b.h, bc); ctx.fill();
+    ctx.fillStyle = RPM_TRACK;
+    chamfer(ctx, b.x, b.y, b.w, b.h, bc); ctx.fill();
+    ctx.lineWidth = 2.4 * k; ctx.strokeStyle = INK;
+    chamfer(ctx, b.x, b.y, b.w, b.h, bc); ctx.stroke();
+
+    const mid = b.x + b.w / 2;
+    ctx.lineWidth = 2 * k; ctx.strokeStyle = INK_SOFT;
+    ctx.beginPath();
+    ctx.moveTo(mid, b.y + 3 * k); ctx.lineTo(mid, b.y + b.h - 3 * k);
+    ctx.stroke();
+
+    /* The commanded lock, drawn as a bar growing out of the datum rather than
+       as a floating pip: a pip says where the wheel is and a bar says how much
+       of it is being used, and the second is what a driver wants from the
+       corner of an eye. */
+    const st = clamp(tc.steer, -1, 1);
+    if (Math.abs(st) > 0.001) {
+      const half = (b.w / 2) - 4 * k;
+      ctx.save();
+      chamfer(ctx, b.x, b.y, b.w, b.h, bc); ctx.clip();
+      ctx.fillStyle = YELLOW;
+      const bw2 = half * Math.abs(st);
+      ctx.fillRect(st < 0 ? mid - bw2 : mid, b.y + 4 * k, bw2, b.h - 8 * k);
+      ctx.restore();
+    }
+
+    /* Which scheme is live, in three or four letters beside the bar. Not a
+       slab and not a sentence: it is the answer to "why is tilting doing
+       nothing", it has to be legible at a glance mid-corner, and a phone
+       screen has no room for anything larger down there. DRAG is the fallback
+       — no gyroscope, or an iOS permission refused — and the game is fully
+       playable on it, which is why the word is a label and not a warning. */
+    const ss = Math.max(10, Math.min(14, b.h * 0.72));
+    drawText(ctx, tc.tilt ? 'TILT' : 'DRAG', b.x - 7 * k, b.y + (b.h - ss) / 2, ss,
+      { align: 'right', color: CREAM, outline: 2.4 * k, weight: 1.3, tracking: 1.2 });
+
+    /* The re-centre control. Present only when tilt is (touch.js returns null
+       for it otherwise), because on the drag fallback there is nothing to
+       centre — the anchor is wherever the thumb went down. */
+    const pl = tc.pill;
+    if (pl) {
+      const pc = pl.h * 0.34;
+      ctx.fillStyle = SHADOW;
+      chamfer(ctx, pl.x + 2 * k, pl.y + 3 * k, pl.w, pl.h, pc); ctx.fill();
+      ctx.fillStyle = INK;
+      chamfer(ctx, pl.x, pl.y, pl.w, pl.h, pc); ctx.fill();
+      const ps = Math.max(10, Math.min(14, pl.h * 0.44));
+      drawText(ctx, 'CENTRE', pl.x + pl.w / 2, pl.y + (pl.h - ps) / 2, ps,
+        { align: 'center', color: tc.calibrated ? CREAM : YELLOW, weight: 1.3, tracking: 1.1 });
+    }
+  }
+
+  /**
+   * PORTRAIT. The first thing a phone visitor sees, so it is composed rather
+   * than warned.
+   *
+   * It replaces the frame completely — an opaque ink field, not a wash —
+   * because the frame behind it is the thing being refused. A 32.8 degree
+   * horizontal cone (.fix/FINDINGS-mobile.md §6) shows a road and no corner
+   * arriving, and letting it show through under a message would read as the
+   * game being covered up rather than as the phone being held wrong.
+   *
+   * Three marks: the pictogram, the instruction on the title's own red slab,
+   * and one line saying why. The reason is included deliberately — "rotate
+   * your device" with no reason reads as an arbitrary restriction, and this one
+   * is a fact about the lens.
+   */
+  _drawRotate(ctx) {
+    const key = `${this.w}x${this.h}@${this.dpr}`;
+    if (key !== this._rotateKey) { this._buildRotate(); this._rotateKey = key; }
+    ctx.fillStyle = INK;
+    ctx.fillRect(0, 0, this.w, this.h);
+    const L = this._rotate;
+    blit(ctx, L, (this.w - L.w) / 2, (this.h - L.h) / 2);
+  }
+
+  _buildRotate() {
+    /* Off the short side against a 390 px reference, like the controls and
+       unlike the rest of this file: in portrait `u` is set by the WIDTH, which
+       is the narrow dimension, so `u`-authored type here would be sized by the
+       very constraint the screen is complaining about. */
+    const k = Math.min(this.w, this.h) / 390;
+    const phW = 84 * k, phH = 148 * k, phC = 16 * k;
+    const gap = 26 * k;
+    const nameSize = 40 * k, weight = 1.4;
+    const bleed = (weight * nameSize) / 12 + 4 * k;
+    const padX = bleed + 18 * k, padY = bleed + 9 * k;
+    const nameW = textWidth('ROTATE', nameSize, 0.9);
+    const bw = nameW + padX * 2, bh = nameSize + padY * 2;
+    const skew = 9 * k;
+    const capSize = 14 * k, capGap = 16 * k;
+
+    const W = Math.max(bw + skew, phH + 60 * k) + 12 * k;
+    const H = phH + 40 * k + gap + bh + capGap + capSize + 12 * k;
+
+    this._rotate = makeLayer(W, H, this.dpr, g => {
+      g.lineJoin = 'round'; g.lineCap = 'round';
+      const cx = W / 2;
+
+      /* The pictogram: a portrait phone leaning into the turn it is being
+         asked to make, with the arc it travels along drawn over its shoulder.
+         A static upright phone plus an arrow is the other option and it was
+         rejected because it does not say WHICH WAY — the lean is the whole
+         instruction, and the arc only annotates it. */
+      g.save();
+      g.translate(cx, phH / 2 + 20 * k);
+      g.rotate(-0.20);
+      g.fillStyle = CREAM;
+      chamfer(g, -phW / 2, -phH / 2, phW, phH, phC); g.fill();
+      g.lineWidth = 4 * k; g.strokeStyle = INK;
+      chamfer(g, -phW / 2, -phH / 2, phW, phH, phC); g.stroke();
+      // The dead screen, in the field colour, so the slab reads as a device.
+      g.fillStyle = INK;
+      chamfer(g, -phW / 2 + 8 * k, -phH / 2 + 13 * k, phW - 16 * k, phH - 30 * k, 7 * k);
+      g.fill();
+      // Home bar, the one detail that fixes the object as a phone.
+      g.fillStyle = CREAM_DIM;
+      chamfer(g, -14 * k, phH / 2 - 12 * k, 28 * k, 4 * k, 2 * k); g.fill();
+      g.restore();
+
+      /* The arc, in the accent the countdown and the badge use for a change of
+         state. Ends in a solid head, because an arc without one is a decoration
+         rather than a direction. */
+      g.save();
+      g.translate(cx, phH / 2 + 20 * k);
+      const R = phH * 0.62;
+      g.lineWidth = 5 * k;
+      g.strokeStyle = INK;
+      g.beginPath(); g.arc(0, 0, R, -Math.PI * 0.86, -Math.PI * 0.40); g.stroke();
+      g.lineWidth = 2.6 * k;
+      g.strokeStyle = YELLOW;
+      g.beginPath(); g.arc(0, 0, R, -Math.PI * 0.86, -Math.PI * 0.40); g.stroke();
+      const a = -Math.PI * 0.40, hx = Math.cos(a) * R, hy = Math.sin(a) * R;
+      g.save();
+      g.translate(hx, hy);
+      g.rotate(a + Math.PI * 0.5);
+      g.beginPath();
+      g.moveTo(0, -9 * k); g.lineTo(8 * k, 6 * k); g.lineTo(-8 * k, 6 * k);
+      g.closePath();
+      g.fillStyle = YELLOW; g.fill();
+      g.lineWidth = 3 * k; g.strokeStyle = INK; g.stroke();
+      g.restore();
+      g.restore();
+
+      /* The instruction, on the title screen's slab — same parallelogram, same
+         offset print shadow, same red, same cream caps. A player who rotates
+         and lands on the title sees the word they just read change into
+         REDROCK on the identical object, which is the cheapest possible way of
+         saying that this screen was part of the game and not an error page. */
+      const by = phH + 40 * k + gap;
+      const bx = (W - bw - skew) / 2;
+      const slab = (ox, oy, fill) => {
+        g.beginPath();
+        g.moveTo(ox + skew, oy);
+        g.lineTo(ox + bw + skew, oy);
+        g.lineTo(ox + bw, oy + bh);
+        g.lineTo(ox, oy + bh);
+        g.closePath();
+        g.fillStyle = fill;
+        g.fill();
+      };
+      slab(bx + 4 * k, by + 5 * k, SHADOW);
+      slab(bx, by, RED);
+      g.lineWidth = 4 * k; g.strokeStyle = INK; g.stroke();
+      drawText(g, 'ROTATE', bx + skew * 0.5 + padX, by + padY, nameSize,
+        { color: CREAM, outline: 4 * k, weight, slant: 0.06, tracking: 0.9 });
+
+      /* And the reason, in the demoted voice this file uses for a fact that is
+         true but not urgent. The camera fixes the VERTICAL field of view, so a
+         tall viewport does not add sky, it takes the sides away. */
+      drawText(g, 'THE ROAD NEEDS THE WIDTH', cx, by + bh + capGap, capSize,
+        { align: 'center', color: CREAM_DIM, weight: 1.25, tracking: 1.6 });
     });
   }
 }

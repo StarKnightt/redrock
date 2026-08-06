@@ -76,9 +76,44 @@ function consider(name, point, radius, height) {
   });
 }
 
+/* The world's own shells and backdrop, which this tool is not about.
+ *
+ * What it IS about is PLACED objects: things dropped into the world at a chosen
+ * position, which the placement rules can therefore put somewhere wrong —
+ * boulders, trees, shrubs, hay bales, tyre barriers, signs, markers. Those can
+ * be moved out of the road. The surfaces the road is cut into and the horizon it
+ * is drawn against cannot, and reporting them says nothing a person can act on.
+ *
+ * Checked against the real name set rather than written from memory, because the
+ * old pattern was matching a naming convention instead of a category and two of
+ * its alternatives were wrong about the names actually in the tree:
+ *
+ *   `foam` never fired. The mesh is `shore-foam`, and `^foam` requires the name
+ *   to BEGIN with foam, so a dead alternative sat in the list looking like
+ *   coverage. Same disease as a branch outside its input's range.
+ *
+ *   the headland rings were not in the list at all, and they are the reason this
+ *   gate was permanently red. `headland-depth-{0,1,2}` are the three depth rings
+ *   of the distant-headland group — src/world/environment.js:5156-5171, whose
+ *   group still carries the historical name `distant-mesas`. Ring 1 is "the
+ *   actual horizon of this stage — a kilometre and a half out", and ring 0
+ *   "stands in open water off the seaward shoulder" (ibid. 5516), which is what
+ *   the lighthouses are put on. src/ already classifies them as backdrop:
+ *   CROWD_SEETHROUGH lists `headland-depth-\d+` beside `sky-dome`, `ocean-bands`
+ *   and `shore-foam` for exactly this reason.
+ *
+ * Widening this list is how a gate gets quietly silenced, so what it newly
+ * admits was enumerated instead of assumed. Over the 42 meshes this tool walks
+ * on seed 22, the change skips exactly four more: `shore-foam` and the three
+ * headland rings. Nothing that is placed, and nothing that was reporting an
+ * offence other than the headland. The enumeration is reproducible with
+ * .fix/verge-names.mjs. */
+const BACKDROP =
+  /^(sky|sun-|ocean|shore-foam|basin|landform|headland-depth-\d+|road-supports|block-clouds)/;
+
 env.traverse((object) => {
   if (!object.isMesh || !object.geometry) return;
-  if (/^(sky|ocean|foam|basin|landform|road-supports|block-clouds|sun-)/.test(object.name)) return;
+  if (BACKDROP.test(object.name)) return;
   const geometry = object.geometry;
   if (!geometry.boundingBox) geometry.computeBoundingBox();
   const local = geometry.boundingBox;

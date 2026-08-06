@@ -66,20 +66,49 @@ const BREAK = flag('break', '');
 const CLEAR_AHEAD_MIN = 1.03;   // rivals behind the player must be lifted
 const DROPPED_MAX = 0.93;       // rivals ahead of it must be trimmed
 /* Inside BAND.dead the player term is specified to be exactly nothing. This is
-   the anchor that stops the gate being one nobody can fail: the two readings
-   above sit hard against the shape's rails, so a probe stuck at a rail would
-   pass them both, and only a zero here can tell a curve from a constant. */
-const LEVEL_EPS = 0.002;
-/* How near parity the dead-zone read has to get for the zero above to mean
- * anything. Derived from the shape rather than picked: `BAND.dead` is 0.6 s, and
- * at 1.0 s the declared player term is 0.05·ss(0.6, 8, 1.0) = 0.0004 on the
- * catch side and 0.10·ss(0.6, 7, 1.0) = 0.0011 on the drop side — both under
- * LEVEL_EPS. So anything inside a second of parity is a place where a correct
- * band reads 1.000 to this tolerance and a band stuck at either rail reads 1.05
- * or 0.78. Not BAND.dead itself, because the probe sits 6 m behind the car it is
- * reading — it may not sit on top of it, the contact envelope is 3.9 m long —
- * and 6 m is 0.6 s for a rival doing 36 km/h through a slow corner. */
-const LEVEL_MAX_GAPT = 1.0;
+ * the anchor that stops the gate being one nobody can fail: the two readings
+ * above sit hard against the shape's rails, so a probe stuck at a rail would
+ * pass them both, and only a zero here can tell a curve from a constant.
+ *
+ * THE BAR IS 2e-4 AND IT USED TO BE 2e-3, which could not fail. Delete
+ * `BAND.dead` from the build — the one regression this row exists to catch — and
+ * the player term becomes `0.10·ss(0, 7, |gapT|)`. At the |gapT| the old
+ * six-metre hold happened to deliver, that is 2.2e-4 to 9e-4 off 1.000: inside
+ * 2e-3, green on all three seeds, exit 0. Measured, not argued; see
+ * .fix/FINDINGS-vacuous.md F2.
+ *
+ * The old bar was sized against how far from parity the read might DRIFT (its
+ * comment reasoned about 1.0 s), which is the wrong quantity. What a bar on a
+ * zero has to be sized against is what a CORRECT build reads. `smoothstep`
+ * clamps, so inside the dead zone the target is exactly zero, and the only thing
+ * between the reading and zero is the tail of `approach`: at BAND.rate 0.45 over
+ * CONVERGE = 20 s, e^(−9) = 1.23e-4 of the rail it came from survives, and it
+ * comes from the drop rail at −0.22, so the residual is 2.7e-5. 2e-4 is 7x that
+ * tail — comfortably admitting a correct build — and 8x below the 1.7e-3 a
+ * dead-zone-free build reads at the gap now commanded. */
+const LEVEL_EPS = 2e-4;
+/* Where the dead-zone read is taken, as a fraction of the SHIPPED BAND.dead, and
+ * commanded in SECONDS — which is what the band is specified in. It used to be a
+ * flat 6 METRES, and six metres is 0.19 s behind a rival at 110 km/h and 0.6 s
+ * behind one at 36, so which part of the dead zone got measured was decided by
+ * whatever gear the middle car happened to be in. Observed |gapT| across three
+ * seeds: 0.19, 0.29, 0.31 — the input to the check was never commanded at all.
+ *
+ * 0.9 rather than 0, because parity is the WORST place to test this. Every
+ * plausible shape is quadratically flat there — smoothstep's t²(3−2t) means a
+ * build with NO dead zone still reads within 2e-4 of 1.000 inside 0.2 s of
+ * parity — so a read at parity cannot tell "quiet because the dead zone holds it
+ * quiet" from "quiet because nothing has started happening yet". Just inside the
+ * edge is the only place a correct build still reads exactly zero while an
+ * incorrect one has all the signal it is ever going to have.
+ *
+ * Six metres survives as a FLOOR and only that: the contact envelope is 3.9 m
+ * long and a probe may not punt the car it is measuring. */
+const LEVEL_GAPT_FRAC = 0.9;
+/* And the read is gated on landing inside [MIN_FRAC, 1] x BAND.dead, so a hold
+   that failed to deliver the commanded gap fails the row instead of quietly
+   sliding the measurement onto the ramp where it means nothing. */
+const LEVEL_GAPT_MIN_FRAC = 0.5;
 const PACK_BACK_MIN = 0.10;     // a rival off the BACK must be lifted
 const PACK_FRONT_MAX = -0.25;   // one off the FRONT must be held
 /* `band` is specified to BE `1 + bandPlayer + bandPack`. Checked rather than
@@ -249,10 +278,18 @@ function report(r, label) {
  * asserts is a property `src/race/index.js` states about itself in prose —
  * a dead zone, a ceiling, a sign — rather than a number this file has tuned.
  */
-const STAND = async ([seed, brk]) => {
+const STAND = async ([seed, brk, levelFrac]) => {
   const { Race, BAND, PACK } = await import('/src/race/index.js');
   const g = window.__game;
   const p = g.player;
+
+  /* The SHIPPED dead zone, read before any --break below can move it, and
+     stashed on `window` because BAND is a live module object: a break mutates it
+     for the life of the page, so seed 2's evaluate would otherwise read seed 1's
+     damage. The commanded gap has to come from the shipped value — command it
+     from the broken one and `--break dead` moves the read to parity, which is
+     the single place the shape cannot be told from a broken one. */
+  const DEAD = (window.__bandDead0 ??= BAND.dead);
 
   /* TEETH. A build that deserves to fail, on request, so a gate that has been
      redefined can be shown to still bite. Never reached without --break, and
@@ -264,6 +301,15 @@ const STAND = async ([seed, brk]) => {
        pack    PACK zeroed. `pack cohesion` must go red and `player band` must
                NOT — that pair is the whole separation, demonstrated.
        rubber  the band switched off entirely. Both gates red.
+       dead    BAND.dead to zero — the dead zone deleted, so the player term
+               starts responding at parity instead of 0.6 s out. Nothing else
+               about the band moves: both rails still saturate, so `clearAhead`
+               and `dropped` read exactly what they read on a good build and the
+               DEAD-ZONE ROW is the only thing that can notice. It is the only
+               break that row can catch and the only one it is for, and it is
+               here because the row could not catch it: at the gap the old
+               six-metre hold delivered, a dead-zone-free build read 0.9991 to
+               0.9995 against a bar of 1±0.002 and every gate went green.
        detach  the band untouched, one rival held 600 m off the back of the
                field. This is the shape of the regression that made this tool
                red an hour ago. `player band` must stay GREEN, `pack cohesion`
@@ -273,6 +319,7 @@ const STAND = async ([seed, brk]) => {
   if (brk === 'catch') BAND.catch = 0.02;
   if (brk === 'drop') { BAND.drop = 0.02; BAND.dropFar = 0.02; }
   if (brk === 'pack') { PACK.catch = 0; PACK.hold = 0; }
+  if (brk === 'dead') BAND.dead = 0;
 
   if (g.race) g.race.dispose();
   const race = new Race(g.track, g.scene, { seed, rubber: brk !== 'rubber' });
@@ -367,6 +414,15 @@ const STAND = async ([seed, brk]) => {
       label, rows,
       subject: sub ? sub.name : null,
       subjectPlayer: sub ? sub.player : null,
+      /* UNROUNDED, and the gate reads these two rather than the display fields
+         above. `sub.player` is quantised to 1e-4 by its own toFixed(4) and the
+         dead-zone bar is 2e-4, so a gate reading it would be decided by a
+         rounding: a real deviation of 1.4e-4 displays as 0.9999 and is judged as
+         1e-4. A bar this fine has to be applied to the number itself. */
+      subjectPlayerExact: subject ? 1 + subject.bandPlayer : null,
+      subjectGapTExact: subject
+        ? (p.s - subject.car.s) / Math.max(p.speed, subject.car.speed, 10)
+        : null,
       subjectPack: sub ? sub.pack : null,
       subjectGapT: sub ? sub.gapT : null,
       othersPack: sub
@@ -391,14 +447,21 @@ const STAND = async ([seed, brk]) => {
    *   the sign `_rubber` treats as "this rival is behind" and lifts — the catch
    *   direction. Negative is the drop one. In seconds because BAND is: dead
    *   0.6, catchAt 8, dropAt 7, dropFarAt 22.
-   * @param onCar sit 6 m behind ONE named rival instead, for the dead-zone
-   *   read. A gap from the field's mean cannot deliver one: by the time the
-   *   field has strung out, "level with the mean" is several seconds away from
-   *   every car in it. One named car and not "whichever is in the middle now",
-   *   so the car being read has been inside the dead zone for the whole
-   *   convergence window rather than having wandered in. 6 m and not 0 because
-   *   the contact envelope is 3.9 m long and a probe may not punt the car it is
-   *   measuring.
+   * @param onCar hold `gapT` behind ONE named rival instead of behind the whole
+   *   field, for the dead-zone read. A gap from the field's mean cannot deliver
+   *   one: by the time the field has strung out, "level with the mean" is
+   *   several seconds away from every car in it. One named car and not
+   *   "whichever is in the middle now", so the car being read has been inside
+   *   the dead zone for the whole convergence window rather than having
+   *   wandered in.
+   *
+   *   With `onCar`, `gapT` is measured against THAT CAR and against the same
+   *   `max(p.speed, v_i, 10)` reference the band itself divides by, so the
+   *   number commanded here and the number read out of the band are the same
+   *   quantity. This used to be a flat `onCar.car.s - 6`, six metres, which is a
+   *   different gap in the band's own units for every speed the car might be
+   *   doing — see LEVEL_GAPT_FRAC. Six metres is now only a floor, so a slow
+   *   corner cannot walk the probe into the car it is reading.
    *
    * Re-placed every frame rather than teleported once, because a parked player
    * does not hold a gap — the old probe's "260 m behind" grew to 600 m over its
@@ -430,7 +493,10 @@ const STAND = async ([seed, brk]) => {
     let clipped = false;
     for (let i = 0; i < secs * 60; i++) {
       pin();
-      const want = onCar ? onCar.car.s - 6 : station(gapT);
+      const want = onCar
+        ? Math.min(onCar.car.s + gapT * Math.max(p.speed, onCar.car.speed, 10),
+          onCar.car.s - 6)
+        : station(gapT);
       const at = roomy(want);
       if (Math.abs(at - want) > 1) clipped = true;
       p.placeAt(at, 0);
@@ -464,7 +530,8 @@ const STAND = async ([seed, brk]) => {
      the whole window — see `hold`'s onCar. */
   const midCar = [...race.entries].sort((a, b) => a.car.s - b.car.s)[
     (race.entries.length - 1) >> 1];
-  hold(CONVERGE, { onCar: midCar });
+  const levelGapT = -levelFrac * DEAD;
+  hold(CONVERGE, { onCar: midCar, gapT: levelGapT });
   const level = read('player level with one rival', midCar);
 
   /* ---- cohesion, measured on its own terms -------------------------------
@@ -498,9 +565,14 @@ const STAND = async ([seed, brk]) => {
     seed, wired, brk,
     ceilings: {
       catch: BAND.catch, drop: BAND.drop + BAND.dropFar, dead: BAND.dead,
+      /* The dead zone the level gap was commanded from, which is what the
+         node-side window has to be measured against. Under --break dead these
+         two differ, and that difference is the whole point. */
+      deadShipped: DEAD,
       catchAt: BAND.catchAt, dropFarAt: BAND.dropFarAt,
       packCatch: PACK.catch, packHold: PACK.hold,
     },
+    levelGapT: +levelGapT.toFixed(3),
     clipped: clipA || clipB,
     band: { settled, dropped, clearAhead, level },
     cohesion: { offBack, offFront },
@@ -538,14 +610,36 @@ function judge(stands) {
       `player band, rivals behind: ${b.clearAhead.player} not > ${CLEAR_AHEAD_MIN}`);
     chk(b.dropped.player < DROPPED_MAX,
       `player band, rivals ahead: ${b.dropped.player} not < ${DROPPED_MAX}`);
-    chk(Math.abs(b.level.subjectGapT) <= LEVEL_MAX_GAPT,
+    /* The dead-zone read is worth something only if it was taken where it was
+       commanded. Too far out and it is a reading of the ramp; too near parity and
+       every shape is flat enough to pass, which is exactly how this row stopped
+       being able to fail. Both ends asserted, on the unrounded gap. */
+    const lg = Math.abs(b.level.subjectGapTExact);
+    const dead = st.ceilings.deadShipped;
+    /* The subject has to exist before it can be measured. `dead` is what the
+       commanded gap is derived from, so a build shipping BAND.dead = 0 would
+       command a gap of zero — and a read at parity is the one read that cannot
+       tell a dead zone from its absence. Without this the window below collapses
+       to [0, 0] and the two rows fail for the wrong reason. Found by break test:
+       editing the constant in src/ (rather than using --break dead, which
+       mutates the live object after this value is captured) produced exactly
+       that degenerate case. */
+    chk(dead > 0,
+      `there is no dead zone to measure: BAND.dead is ${dead}, so the gap this`
+      + ` read is commanded at would be 0 s — and at parity a band with no dead`
+      + ` zone reads the same as one with a correct one`);
+    chk(dead > 0 && lg <= dead && lg >= LEVEL_GAPT_MIN_FRAC * dead,
       `dead-zone check not exercised: ${b.level.subject} sat at gapT`
-      + ` ${b.level.subjectGapT}, further than ${LEVEL_MAX_GAPT} s from parity`);
-    chk(Math.abs(b.level.subjectPlayer - 1) < LEVEL_EPS,
-      `player band inside the dead zone: ${b.level.subject} reads`
-      + ` ${b.level.subjectPlayer}, not 1 to ${LEVEL_EPS}`);
-    chk(b.dropped.player < b.level.subjectPlayer
-      && b.level.subjectPlayer < b.clearAhead.player,
+      + ` ${lg.toFixed(3)} s, outside the`
+      + ` ${(LEVEL_GAPT_MIN_FRAC * dead).toFixed(2)}..${dead} s window this read has`
+      + ` to be taken in (commanded ${Math.abs(st.levelGapT)} s)`);
+    chk(Math.abs(b.level.subjectPlayerExact - 1) < LEVEL_EPS,
+      `player band inside the dead zone: ${b.level.subject} at gapT`
+      + ` ${lg.toFixed(3)} s reads ${b.level.subjectPlayerExact.toFixed(6)}, off 1`
+      + ` by ${Math.abs(b.level.subjectPlayerExact - 1).toExponential(2)} against a`
+      + ` bar of ${LEVEL_EPS} — the band is responding inside its own dead zone`);
+    chk(b.dropped.player < b.level.subjectPlayerExact
+      && b.level.subjectPlayerExact < b.clearAhead.player,
       'player band is not monotone across ahead / level / behind');
 
     // pack cohesion
@@ -581,7 +675,10 @@ function showStand(st) {
   line(st.band.dropped, `  bar < ${DROPPED_MAX}`);
   line(st.band.clearAhead, `  bar > ${CLEAR_AHEAD_MIN}`);
   line(st.band.level, `  ${st.band.level.subject} at gapT`
-    + ` ${st.band.level.subjectGapT} reads ${st.band.level.subjectPlayer},`
+    + ` ${st.band.level.subjectGapTExact.toFixed(3)} s (commanded`
+    + ` ${st.levelGapT} s of a ${st.ceilings.deadShipped} s dead zone) reads`
+    + ` ${st.band.level.subjectPlayerExact.toFixed(6)}, off 1 by`
+    + ` ${Math.abs(st.band.level.subjectPlayerExact - 1).toExponential(2)},`
     + ` bar 1±${LEVEL_EPS}`);
   for (const d of [st.cohesion.offBack, st.cohesion.offFront]) {
     line(d, `  subject ${d.subject} pack ${d.subjectPack}, others ${d.othersPack}`);
@@ -650,7 +747,7 @@ await run({ width: 640, height: 360, hash: 'manual' }, async ({ page, errs, gl }
 
   const stands = [];
   for (const seed of SEEDS) {
-    stands.push(await page.evaluate(STAND, [seed, BREAK]));
+    stands.push(await page.evaluate(STAND, [seed, BREAK, LEVEL_GAPT_FRAC]));
   }
   console.log('\n  ─── band stand ' + (BREAK ? `[--break ${BREAK}] ` : '')
     + '───────────────────────────────────────');
@@ -660,8 +757,9 @@ await run({ width: 640, height: 360, hash: 'manual' }, async ({ page, errs, gl }
   const s0 = stands[0].band;
   console.log(`\n  player band:   rivals behind ${s0.clearAhead.player}`
     + ` (bar > ${CLEAR_AHEAD_MIN}), rivals ahead ${s0.dropped.player}`
-    + ` (bar < ${DROPPED_MAX}), level with ${s0.level.subject}`
-    + ` ${s0.level.subjectPlayer} (bar 1±${LEVEL_EPS})`);
+    + ` (bar < ${DROPPED_MAX}), level with ${s0.level.subject} at`
+    + ` ${s0.level.subjectGapTExact.toFixed(3)} s`
+    + ` ${s0.level.subjectPlayerExact.toFixed(6)} (bar 1±${LEVEL_EPS})`);
   console.log(`  pack cohesion: a rival off the back reads`
     + ` ${stands[0].cohesion.offBack.subjectPack}`
     + ` (bar > ${PACK_BACK_MIN}), one off the front`

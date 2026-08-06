@@ -53,8 +53,12 @@ function nearest(point) {
 }
 
 const offences = [];
+/* How much was actually judged, so that "nothing intrudes" can be distinguished
+   from "nothing was looked at" — see the guard above the clean exit. */
+let walked = 0, considered = 0;
 
 function consider(name, point, radius, height) {
+  considered++;
   const f = nearest(point);
   const dx = point.x - f.pos.x, dz = point.z - f.pos.z;
   const lateral = Math.abs(dx * f.flatRight.x + dz * f.flatRight.z);
@@ -114,6 +118,7 @@ const BACKDROP =
 env.traverse((object) => {
   if (!object.isMesh || !object.geometry) return;
   if (BACKDROP.test(object.name)) return;
+  walked++;
   const geometry = object.geometry;
   if (!geometry.boundingBox) geometry.computeBoundingBox();
   const local = geometry.boundingBox;
@@ -153,12 +158,38 @@ for (const o of offences) {
   groups.set(key, g);
 }
 
+/* "No offences" is only good news if something was examined.
+ *
+ * This gate's clean path is now the live one — it used to be red on every run, and
+ * a red gate at least announces itself. A green one does not, so an empty
+ * `offences` list has to be able to fail. It would otherwise read as a clear road
+ * whether the road was clear or the world simply never built: a stage that threw
+ * during construction, a traverse that matched nothing, or a BACKDROP pattern
+ * widened until it swallowed everything all arrive here with zero offences and an
+ * unqualified tick. That last one matters most, because widening that pattern is
+ * exactly the edit this file invites.
+ *
+ * The floors are far below the observed readings rather than fitted to them, so
+ * they catch a collapse without tripping when placement counts drift. Measured on
+ * seeds 22, 1, 40, 7 and 99: 30 meshes judged on every one, and 17141 to 18917
+ * placements considered. The floors sit about 4x and 34x under that. */
+const MIN_WALKED = 8, MIN_CONSIDERED = 500;
+if (walked < MIN_WALKED || considered < MIN_CONSIDERED) {
+  console.log(`  ✗ nothing was judged: ${walked} mesh(es) walked and ${considered}`
+    + ` placement(s) considered, under the floor of ${MIN_WALKED} and`
+    + ` ${MIN_CONSIDERED}. An empty offence list here is an empty measurement,`
+    + ' not a clear road.');
+  process.exit(1);
+}
+
 if (!groups.size) {
-  console.log('  ✓ nothing intrudes on the driving surface');
+  console.log('  ✓ nothing intrudes on the driving surface'
+    + ` (${walked} meshes, ${considered} placements)`);
   process.exit(0);
 }
 
-console.log(`  ✗ ${offences.length} intrusion(s) across ${groups.size} object set(s)\n`);
+console.log(`  ✗ ${offences.length} intrusion(s) across ${groups.size} object set(s)`
+  + ` (${walked} meshes, ${considered} placements)\n`);
 for (const [key, g] of [...groups].sort((a, b) => b[1].n - a[1].n)) {
   const w = g.worst;
   console.log(

@@ -212,4 +212,28 @@ for (const SEED of SEEDS) {
 console.log(`\n  TOTAL: ${bad} of ${seen} judged figures stand on sea or sky`
   + ` (${(100 * bad / Math.max(seen, 1)).toFixed(0)}%)`);
 for (const w of worst) console.log('    ' + w);
-finish();
+
+/* A headline computed from an empty tally is not a clean result.
+ *
+ * `Math.max(seen, 1)` above keeps the percentage from being NaN, and the cost of
+ * that is that zero figures judged prints as "0 of 0 ... (0%)", which reads
+ * exactly like a stage with no spectator over water. Measured, on a build with a
+ * deliberate syntax error in src/core/util.js: all three seeds printed
+ * "parse errors — not launching a browser", nothing was rendered or sampled at
+ * all, and this tool printed that 0% headline and exited 0.
+ *
+ * Every way of reaching an empty tally is a reason to fail rather than a result:
+ * the build did not parse, the page threw, `g.crowd` was absent, or every
+ * ablation box came out under the 10 px floor so nothing was judged. */
+if (!seen) {
+  console.log('  FAIL nothing was judged — the 0% above is an empty tally,'
+    + ' not a clean stage');
+  process.exitCode = 1;
+}
+
+/* Never a bare finish(). `finish` defaults its argument to 0, so `finish()` is
+   `finish(0)` — the same discarded exit code the 67-tool repair removed, in a
+   spelling a grep for "finish(0)" cannot match. harness.run() raises
+   process.exitCode on a parse error, a page error, a renderer crash or a probe
+   throw, and this is the line that either reports that or hides it. */
+finish(process.exitCode || 0);

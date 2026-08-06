@@ -67,4 +67,9 @@ await run({
   }
 });
 
-finish();
+/* Not `finish()`. `finish` defaults its argument to 0, so a bare call is
+   `finish(0)` — the discarded exit code the 67-tool repair removed, in a
+   spelling a grep for "finish(0)" cannot match. Measured: with a syntax error in
+   src/core/util.js this tool printed "parse errors — not launching a browser",
+   sampled no chord, and exited 0. */
+finish(process.exitCode || 0);
